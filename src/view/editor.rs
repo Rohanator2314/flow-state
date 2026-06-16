@@ -19,15 +19,22 @@
 
 use std::ops::Range;
 
+use iced::advanced::graphics::text::cosmic_text;
 use iced::advanced::text::highlighter::Format;
 use iced::keyboard::key::Named;
 use iced::keyboard::Key;
 // Our vendored, extended fork of iced's `text_editor` (see view::widget).
-use crate::view::widget::text_editor::{self, Binding, KeyPress, Motion, TextEditor};
-use iced::{Background, Border, Color, Element, Fill, Task};
+use crate::view::widget::text_editor::{
+    self, Binding, DecorationQuad, KeyPress, Motion, TextEditor,
+};
+use iced::{Background, Border, Color, Element, Fill, Rectangle, Task};
 
 use crate::app::{App, DocId, Message};
 use crate::core::text::{self, Pos};
+use crate::view::decoration;
+
+/// Thickness of the accent emphasis underline, in pixels.
+const UNDERLINE_THICKNESS: f32 = 1.5;
 
 fn editor_id(id: DocId) -> iced::widget::Id {
     iced::widget::Id::from(format!("editor-{id}"))
@@ -52,14 +59,16 @@ pub fn view(app: &App, id: DocId) -> Element<'_, Message> {
     let pos = doc.content.cursor().position;
     let cursor: Pos = (pos.line, pos.column);
 
-    // Accent emphasis: while CTRL or SHIFT is held in the focused editor, paint
-    // the text its BACKSPACE variant would delete — the previous word (CTRL) or
-    // the current sentence (SHIFT) — so the writer sees the target first.
+    // Accent emphasis: while CTRL or SHIFT is held in the focused editor,
+    // underline the text its BACKSPACE variant would delete — the previous word
+    // (CTRL) or the current sentence (SHIFT) — so the writer sees the target.
     let emphasis = if is_active && !selecting {
         let m = app.modifiers;
         if m.shift() {
             let lines = doc.lines();
-            text::sentence_start_before(&lines, cursor).filter(|&s| s != cursor).map(|s| (s, cursor))
+            text::sentence_start_before(&lines, cursor)
+                .filter(|&s| s != cursor)
+                .map(|s| (s, cursor))
         } else if m.control() {
             let lines = doc.lines();
             text::word_before(&lines, cursor)
@@ -85,16 +94,25 @@ pub fn view(app: &App, id: DocId) -> Element<'_, Message> {
             (0, usize::MAX)
         },
         dim: theme.text_inactive,
-        accent: theme.accent,
         generation: doc.generation,
-        emphasis,
         ghost,
     };
+
+    // The emphasis underline is a decoration pass (the color highlighter can
+    // recolor text but not underline it). Geometry comes from the editor's
+    // current layout via the cosmic buffer.
+    let decorations = emphasis
+        .map(|(start, end)| {
+            doc.content
+                .with_buffer(|buffer| underline_quads(buffer, start, end, theme.accent))
+        })
+        .unwrap_or_default();
 
     TextEditor::new(&doc.content)
         .id(editor_id(id))
         .on_action(move |action| Message::Edit(id, action))
         .key_binding(key_binding)
+        .decorations(decorations)
         .highlight_with::<DimHighlighter>(settings, |highlight, _theme| Format {
             color: *highlight,
             font: None,
@@ -160,20 +178,40 @@ fn custom_binding(press: &KeyPress) -> Option<Binding<Message>> {
     }
 }
 
+/// Accent underlines for the [`emphasis`](DimSettings) span — one thin quad
+/// along the baseline of every visual line the span covers.
+fn underline_quads(
+    buffer: &cosmic_text::Buffer,
+    start: Pos,
+    end: Pos,
+    color: Color,
+) -> Vec<DecorationQuad> {
+    decoration::span_rects(buffer, start, end)
+        .into_iter()
+        .map(|r| DecorationQuad {
+            bounds: Rectangle {
+                x: r.x,
+                y: r.y + r.height - UNDERLINE_THICKNESS - 1.0,
+                width: r.width,
+                height: UNDERLINE_THICKNESS,
+            },
+            color,
+            behind: false,
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DimSettings {
     /// Inclusive line range of the active paragraph.
     pub active: (usize, usize),
     pub dim: Color,
-    pub accent: Color,
     /// [`Document::generation`](crate::app::Document): changes on undo/redo
     /// (whole-content swaps) to force a re-highlight even when the active
     /// range happens to be identical.
     pub generation: usize,
-    /// Span to paint in the accent color (the word/sentence a BACKSPACE would
-    /// delete), as `(start, end)` `(line, byte_col)` positions.
-    pub emphasis: Option<(Pos, Pos)>,
-    /// Span of phantom (deleted-sentence) text to dim, same coordinates.
+    /// Span of phantom (deleted-sentence) text to dim, as `(start, end)`
+    /// `(line, byte_col)` positions.
     pub ghost: Option<(Pos, Pos)>,
 }
 
@@ -228,43 +266,21 @@ impl iced::advanced::text::Highlighter for DimHighlighter {
         let (active_start, active_end) = s.active;
         let base = (line < active_start || line > active_end).then_some(s.dim);
 
-        // Override spans on this line, highest priority first.
-        let emphasis = s.emphasis.and_then(|span| clip(span, line, len));
-        let ghost = s.ghost.and_then(|span| clip(span, line, len));
-
-        // No overrides → one segment for the whole line (the common case).
-        if emphasis.is_none() && ghost.is_none() {
+        // The only sub-line override is the phantom ghost, dimmed even though it
+        // sits inside the active paragraph. (Emphasis is an underline decoration
+        // now, not a recolor.)
+        let Some((g0, g1)) = s.ghost.and_then(|span| clip(span, line, len)) else {
             return vec![(0..len, base)].into_iter();
-        }
-
-        // Split the line at every override boundary, then colour each segment
-        // by the first override covering it (emphasis over ghost over base).
-        let mut points = vec![0, len];
-        for (a, b) in [emphasis, ghost].into_iter().flatten() {
-            points.push(a);
-            points.push(b);
-        }
-        points.sort_unstable();
-        points.dedup();
-
-        let covers = |span: Option<(usize, usize)>, at: usize| {
-            span.is_some_and(|(a, b)| at >= a && at < b)
         };
-        points
-            .windows(2)
-            .filter(|w| w[0] < w[1])
-            .map(|w| {
-                let color = if covers(emphasis, w[0]) {
-                    Some(s.accent)
-                } else if covers(ghost, w[0]) {
-                    Some(s.dim)
-                } else {
-                    base
-                };
-                (w[0]..w[1], color)
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
+        let mut out = Vec::with_capacity(3);
+        if g0 > 0 {
+            out.push((0..g0, base));
+        }
+        out.push((g0..g1, Some(s.dim)));
+        if g1 < len {
+            out.push((g1..len, base));
+        }
+        out.into_iter()
     }
 
     fn current_line(&self) -> usize {

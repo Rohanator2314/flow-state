@@ -11,6 +11,7 @@
 //! `surface` color, pane bodies are the editor `background`, and the focused
 //! pane's border uses the theme accent.
 
+pub mod decoration;
 pub mod dialogs;
 pub mod editor;
 pub mod menu;

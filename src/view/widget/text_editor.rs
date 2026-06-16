@@ -12,6 +12,9 @@
 #![allow(dead_code, unexpected_cfgs, clippy::type_complexity)]
 
 use iced::advanced::clipboard::{self, Clipboard};
+// flow-state: the concrete graphics editor exposes its cosmic-text buffer
+// (layout + scroll), which we read for decoration geometry and centering.
+use iced::advanced::graphics::text::cosmic_text;
 use iced::advanced::input_method::{self, InputMethod};
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::mouse;
@@ -110,6 +113,23 @@ pub struct TextEditor<
         &Theme,
     ) -> highlighter::Format<Renderer::Font>,
     last_status: Option<Status>,
+    // flow-state: extra rectangles painted under/over the text (character
+    // underlines, paragraph glow). Editor-local coords; see `draw`.
+    decorations: Vec<DecorationQuad>,
+}
+
+/// flow-state: a single rectangle the editor paints in addition to the text —
+/// the building block for character underlines and the paragraph glow. Bounds
+/// are **editor-local** (relative to the text origin, scroll already applied),
+/// the same space as the widget's selection rectangles; `draw` adds the
+/// padding translation and clips to the text area.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DecorationQuad {
+    pub bounds: Rectangle,
+    pub color: Color,
+    /// Painted behind the glyphs (backgrounds, glow) when true; over them
+    /// (underlines) when false.
+    pub behind: bool,
 }
 
 impl<'a, Message, Theme, Renderer>
@@ -141,6 +161,7 @@ where
                 highlighter::Format::default()
             },
             last_status: None,
+            decorations: Vec::new(),
         }
     }
 
@@ -238,6 +259,14 @@ where
         self
     }
 
+    /// flow-state: sets the extra rectangles painted under/over the text
+    /// (character underlines, paragraph glow). Bounds are editor-local; see
+    /// [`DecorationQuad`].
+    pub fn decorations(mut self, decorations: Vec<DecorationQuad>) -> Self {
+        self.decorations = decorations;
+        self
+    }
+
     /// Highlights the [`TextEditor`] using the given syntax and theme.
     #[cfg(feature = "highlighter")]
     pub fn highlight(
@@ -286,6 +315,7 @@ where
             highlighter_settings: settings,
             highlighter_format: to_format,
             last_status: self.last_status,
+            decorations: self.decorations,
         }
     }
 
@@ -466,6 +496,17 @@ where
     /// Returns whether or not the the [`Content`] is empty.
     pub fn is_empty(&self) -> bool {
         self.0.borrow().editor.is_empty()
+    }
+}
+
+/// flow-state additions for the concrete renderer: read access to the cosmic
+/// buffer that backs the editor (layout runs + scroll), used by the decoration
+/// draw pass and typewriter centering. Kept to the concrete `iced::Renderer`
+/// so the editor projection resolves to `iced_graphics`' editor.
+impl Content<iced::Renderer> {
+    /// Runs `f` with the editor's cosmic-text buffer (read only).
+    pub fn with_buffer<T>(&self, f: impl FnOnce(&cosmic_text::Buffer) -> T) -> T {
+        f(self.0.borrow().editor.buffer())
     }
 }
 
@@ -967,6 +1008,10 @@ where
         );
 
         let text_bounds = bounds.shrink(self.padding);
+        let translation = text_bounds.position() - Point::ORIGIN;
+
+        // flow-state: paragraph glow / backgrounds sit behind the glyphs.
+        draw_decorations(renderer, &self.decorations, true, translation, text_bounds);
 
         if internal.editor.is_empty() {
             if let Some(placeholder) = self.placeholder.clone() {
@@ -997,8 +1042,6 @@ where
                 text_bounds,
             );
         }
-
-        let translation = text_bounds.position() - Point::ORIGIN;
 
         if let Some(focus) = state.focus.as_ref() {
             match internal.editor.selection() {
@@ -1044,6 +1087,9 @@ where
                 Selection::Caret(_) => {}
             }
         }
+
+        // flow-state: character underlines sit over the glyphs.
+        draw_decorations(renderer, &self.decorations, false, translation, text_bounds);
     }
 
     fn mouse_interaction(
@@ -1093,6 +1139,29 @@ where
         text_editor: TextEditor<'a, Highlighter, Message, Theme, Renderer>,
     ) -> Self {
         Self::new(text_editor)
+    }
+}
+
+/// flow-state: paints the decoration quads of the given layer (behind or over
+/// the text), translating each editor-local rect into widget space and
+/// clipping it to the text area.
+fn draw_decorations<Renderer: text::Renderer>(
+    renderer: &mut Renderer,
+    decorations: &[DecorationQuad],
+    behind: bool,
+    translation: Vector,
+    text_bounds: Rectangle,
+) {
+    for deco in decorations.iter().filter(|d| d.behind == behind) {
+        if let Some(bounds) = text_bounds.intersection(&(deco.bounds + translation)) {
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds,
+                    ..renderer::Quad::default()
+                },
+                deco.color,
+            );
+        }
     }
 }
 
