@@ -87,7 +87,7 @@ editing (selection, clipboard, mouse) works as expected.
 | TAB | Accept the active phantom (otherwise inserts a tab) |
 | CTRL+N | New (untitled) file in its own pane |
 | CTRL+O | Open a file via the system file picker |
-| CTRL+F | Toggle find in the focused pane (ENTER / ALT+N / ‹ › step matches, ALT+SHIFT+N steps back, ESC or a second CTRL+F closes) |
+| CTRL+F | Toggle find in the focused pane (ENTER / ‹ › step matches, ESC or a second CTRL+F closes) |
 | CTRL+W | Close the focused pane (confirming if it has unsaved changes) |
 | CTRL+TAB | Focus the next pane |
 | CTRL+Q | Quit (prompts to save if anything is unsaved) |

@@ -283,28 +283,6 @@ fn on_find_toggle(
     }
 }
 
-/// Subscription filter (active only while the find bar is open): ALT+N / ALT+
-/// SHIFT+N step to the next / previous match. Attached only when searching, so
-/// ALT+N keeps its paragraph-navigation meaning the rest of the time.
-fn on_find_nav(
-    event: iced::Event,
-    _status: iced::event::Status,
-    _window: window::Id,
-) -> Option<Message> {
-    use iced::keyboard::{Event, Key};
-    let iced::Event::Keyboard(Event::KeyPressed { key, modifiers, .. }) = event else {
-        return None;
-    };
-    if !modifiers.alt() {
-        return None;
-    }
-    match key.as_ref() {
-        Key::Character("n") if modifiers.shift() => Some(Message::SearchPrev),
-        Key::Character("n") => Some(Message::SearchNext),
-        _ => None,
-    }
-}
-
 /// Resolve a font-family name to an `iced::Font`. The built-in sentinel (and
 /// an empty name) map to the default sans-serif. A named family is leaked to
 /// `'static` so it can live in `Font::with_name`; the font set is small and
@@ -698,10 +676,6 @@ impl App {
             // CTRL+F toggles find from anywhere (so it can also close the bar).
             iced::event::listen_with(on_find_toggle),
         ];
-        if self.search.is_some() {
-            // ALT+N / ALT+SHIFT+N step matches only while the bar is open.
-            subs.push(iced::event::listen_with(on_find_nav));
-        }
         if self.menu.is_some() {
             // The command bar's filter input ignores arrow keys, so they
             // arrive here and drive the list selection.
@@ -1405,10 +1379,6 @@ impl App {
                 Task::none()
             }
             Message::PaneClicked(pane) => {
-                // Clicking into a pane focuses the editor; close the find bar so
-                // it doesn't linger with the editor focused (which would let
-                // ALT+N both step matches and move paragraphs).
-                self.search = None;
                 self.set_focus(pane);
                 Task::none()
             }
