@@ -28,6 +28,7 @@ use iced::widget::text_editor::{Binding, KeyPress, Motion};
 use iced::{Background, Border, Color, Element, Fill, Task};
 
 use crate::app::{App, DocId, Message};
+use crate::core::text::{self, Pos};
 
 fn editor_id(id: DocId) -> iced::widget::Id {
     iced::widget::Id::from(format!("editor-{id}"))
@@ -49,6 +50,34 @@ pub fn view(app: &App, id: DocId) -> Element<'_, Message> {
     // suspended while anything is selected (or turned off in the config), and
     // it only applies to the focused document.
     let selecting = doc.content.cursor().selection.is_some();
+    let pos = doc.content.cursor().position;
+    let cursor: Pos = (pos.line, pos.column);
+
+    // Accent emphasis: while CTRL or SHIFT is held in the focused editor, paint
+    // the text its BACKSPACE variant would delete — the previous word (CTRL) or
+    // the current sentence (SHIFT) — so the writer sees the target first.
+    let emphasis = if is_active && !selecting {
+        let m = app.modifiers;
+        if m.shift() {
+            let lines = doc.lines();
+            text::sentence_start_before(&lines, cursor).filter(|&s| s != cursor).map(|s| (s, cursor))
+        } else if m.control() {
+            let lines = doc.lines();
+            text::word_before(&lines, cursor)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Phantom: the deleted-sentence ghost sits in the buffer just after the
+    // cursor; dim it so it reads as a suggestion to type back or accept.
+    let ghost = doc
+        .phantom
+        .as_ref()
+        .map(|rem| (cursor, text::advance(cursor, rem)));
+
     let settings = DimSettings {
         // "Everything is active" — nothing gets dimmed.
         active: if is_active && app.config.focus_dimming && !selecting {
@@ -57,7 +86,10 @@ pub fn view(app: &App, id: DocId) -> Element<'_, Message> {
             (0, usize::MAX)
         },
         dim: theme.text_inactive,
+        accent: theme.accent,
         generation: doc.generation,
+        emphasis,
+        ghost,
     };
 
     text_editor(&doc.content)
@@ -112,10 +144,16 @@ fn custom_binding(press: &KeyPress) -> Option<Binding<Message>> {
         Key::Named(Named::Backspace) if m.shift() => {
             Some(Binding::Custom(Message::DeleteSentence))
         }
-        Key::Named(Named::Backspace) if m.control() => Some(Binding::Sequence(vec![
-            Binding::Select(Motion::WordLeft),
-            Binding::Backspace,
-        ])),
+        // Handled in `app.rs`: deletes the previous word, or trims the last
+        // word off an active phantom.
+        Key::Named(Named::Backspace) if m.control() => {
+            Some(Binding::Custom(Message::DeleteWord))
+        }
+        // TAB accepts an active phantom; with none it inserts a tab (see
+        // `app.rs`), so normal tabbing is unaffected.
+        Key::Named(Named::Tab) if m.is_empty() => {
+            Some(Binding::Custom(Message::PhantomAccept))
+        }
         // ESC is handled by the global `listen_with` subscription (see
         // `app::subscription`), which fires even though the editor would
         // otherwise capture the press for its default Unfocus.
@@ -128,10 +166,28 @@ pub struct DimSettings {
     /// Inclusive line range of the active paragraph.
     pub active: (usize, usize),
     pub dim: Color,
+    pub accent: Color,
     /// [`Document::generation`](crate::app::Document): changes on undo/redo
     /// (whole-content swaps) to force a re-highlight even when the active
     /// range happens to be identical.
     pub generation: usize,
+    /// Span to paint in the accent color (the word/sentence a BACKSPACE would
+    /// delete), as `(start, end)` `(line, byte_col)` positions.
+    pub emphasis: Option<(Pos, Pos)>,
+    /// Span of phantom (deleted-sentence) text to dim, same coordinates.
+    pub ghost: Option<(Pos, Pos)>,
+}
+
+/// Clip a `(start, end)` position span to `line`, returning the covered
+/// `[start_col, end_col)` byte range within a line of length `len`.
+fn clip(span: (Pos, Pos), line: usize, len: usize) -> Option<(usize, usize)> {
+    let ((sl, sc), (el, ec)) = span;
+    if line < sl || line > el {
+        return None;
+    }
+    let start = if line == sl { sc } else { 0 }.min(len);
+    let end = if line == el { ec } else { len }.min(len);
+    (start < end).then_some((start, end))
 }
 
 pub struct DimHighlighter {
@@ -141,9 +197,9 @@ pub struct DimHighlighter {
 
 impl iced::advanced::text::Highlighter for DimHighlighter {
     type Settings = DimSettings;
-    /// `Some(color)` dims the line; `None` keeps the default text color.
+    /// `Some(color)` paints the range; `None` keeps the default text color.
     type Highlight = Option<Color>;
-    type Iterator<'a> = std::iter::Once<(Range<usize>, Self::Highlight)>;
+    type Iterator<'a> = std::vec::IntoIter<(Range<usize>, Self::Highlight)>;
 
     fn new(settings: &Self::Settings) -> Self {
         Self {
@@ -154,7 +210,7 @@ impl iced::advanced::text::Highlighter for DimHighlighter {
 
     fn update(&mut self, new_settings: &Self::Settings) {
         self.settings = new_settings.clone();
-        // Restart from the top: the active paragraph changed.
+        // Restart from the top: the active paragraph (or a span) changed.
         self.line = 0;
     }
 
@@ -163,15 +219,53 @@ impl iced::advanced::text::Highlighter for DimHighlighter {
     }
 
     fn highlight_line(&mut self, text: &str) -> Self::Iterator<'_> {
-        let (start, end) = self.settings.active;
+        let s = &self.settings;
         let line = self.line;
         self.line += 1;
-        let highlight = if line >= start && line <= end {
-            None
-        } else {
-            Some(self.settings.dim)
+        let len = text.len();
+
+        // Base color for the whole line: dimmed unless it is in the active
+        // paragraph.
+        let (active_start, active_end) = s.active;
+        let base = (line < active_start || line > active_end).then_some(s.dim);
+
+        // Override spans on this line, highest priority first.
+        let emphasis = s.emphasis.and_then(|span| clip(span, line, len));
+        let ghost = s.ghost.and_then(|span| clip(span, line, len));
+
+        // No overrides → one segment for the whole line (the common case).
+        if emphasis.is_none() && ghost.is_none() {
+            return vec![(0..len, base)].into_iter();
+        }
+
+        // Split the line at every override boundary, then colour each segment
+        // by the first override covering it (emphasis over ghost over base).
+        let mut points = vec![0, len];
+        for (a, b) in [emphasis, ghost].into_iter().flatten() {
+            points.push(a);
+            points.push(b);
+        }
+        points.sort_unstable();
+        points.dedup();
+
+        let covers = |span: Option<(usize, usize)>, at: usize| {
+            span.is_some_and(|(a, b)| at >= a && at < b)
         };
-        std::iter::once((0..text.len(), highlight))
+        points
+            .windows(2)
+            .filter(|w| w[0] < w[1])
+            .map(|w| {
+                let color = if covers(emphasis, w[0]) {
+                    Some(s.accent)
+                } else if covers(ghost, w[0]) {
+                    Some(s.dim)
+                } else {
+                    base
+                };
+                (w[0]..w[1], color)
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     fn current_line(&self) -> usize {

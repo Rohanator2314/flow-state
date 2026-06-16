@@ -39,12 +39,16 @@ pub enum Message {
     Undo,
     Redo,
     DeleteSentence,
+    DeleteWord,
+    PhantomAccept,
     NextParagraph,
     PrevParagraph,
+    /// Held-modifier set changed — drives the sidebar keybind hints, the
+    /// accent emphasis, and PDF wheel zoom.
+    ModifiersChanged(iced::keyboard::Modifiers),
     // preview
     Compiled(DocId, Result<Vec<PdfPage>, String>),
     PdfScroll(iced::mouse::ScrollDelta),
-    CtrlChanged(bool),
     DismissError,
     LinkClicked(markdown::Uri),
     // panes
@@ -206,8 +210,9 @@ fn on_menu_arrows(
     }
 }
 
-/// Subscription filter: track the CTRL modifier (for PDF wheel zoom).
-fn on_ctrl(
+/// Subscription filter: track the held-modifier set (keybind hints, accent
+/// emphasis, PDF wheel zoom).
+fn on_modifiers(
     event: iced::Event,
     _status: iced::event::Status,
     _window: window::Id,
@@ -215,7 +220,7 @@ fn on_ctrl(
     use iced::keyboard::Event;
     match event {
         iced::Event::Keyboard(Event::ModifiersChanged(m)) => {
-            Some(Message::CtrlChanged(m.control()))
+            Some(Message::ModifiersChanged(m))
         }
         _ => None,
     }
@@ -274,6 +279,12 @@ pub struct Document {
     /// The last compile error for this document, shown as a modal while it is
     /// focused.
     pub compile_error: Option<String>,
+    /// A "phantom" of a just-deleted sentence: the deleted text, kept dimmed in
+    /// the buffer immediately after the cursor. The writer can type it back
+    /// (matching chars fill in, others push it along), TAB to accept it, or
+    /// SHIFT/CTRL+BACKSPACE to discard it (whole, or the last word). `None`
+    /// when no phantom is active. Stripped from the buffer on save.
+    pub phantom: Option<String>,
 }
 
 impl Document {
@@ -287,6 +298,7 @@ impl Document {
             preview: Preview::None,
             compiling: false,
             compile_error: None,
+            phantom: None,
         }
     }
 
@@ -304,6 +316,7 @@ impl Document {
             preview: Preview::None,
             compiling: false,
             compile_error: None,
+            phantom: None,
         };
         // `with_text` leaves the cursor at the end; start at the top.
         doc.move_to((0, 0));
@@ -336,6 +349,9 @@ impl Document {
     }
 
     fn restore(&mut self, snapshot: Snapshot) {
+        // The content is rebuilt wholesale, so any phantom's positions are
+        // void — drop it (the snapshot text already holds the solid sentence).
+        self.phantom = None;
         self.content = text_editor::Content::with_text(&snapshot.text);
         self.move_to(snapshot.cursor);
         self.modified = true;
@@ -347,6 +363,61 @@ impl Document {
             position: text_editor::Position { line, column },
             selection: None,
         });
+    }
+
+    /// The cursor as a `(line, byte_col)` position.
+    fn cursor_pos(&self) -> text::Pos {
+        let p = self.content.cursor().position;
+        (p.line, p.column)
+    }
+
+    /// Select `[a, b)` and delete it, leaving the cursor at `a`.
+    fn delete_span(&mut self, a: text::Pos, b: text::Pos) {
+        self.content.move_to(text_editor::Cursor {
+            position: text_editor::Position { line: a.0, column: a.1 },
+            selection: Some(text_editor::Position { line: b.0, column: b.1 }),
+        });
+        self.content
+            .perform(text_editor::Action::Edit(text_editor::Edit::Backspace));
+    }
+
+    /// Discard an active phantom by removing its remaining ghost text from the
+    /// buffer — the deleted sentence stays gone.
+    fn phantom_discard(&mut self) {
+        if let Some(rem) = self.phantom.take() {
+            let cur = self.cursor_pos();
+            self.delete_span(cur, text::advance(cur, &rem));
+            self.modified = true;
+        }
+    }
+
+    /// Accept an active phantom: keep its text as real content, moving the
+    /// cursor to its end.
+    fn phantom_accept(&mut self) {
+        if let Some(rem) = self.phantom.take() {
+            let cur = self.cursor_pos();
+            self.move_to(text::advance(cur, &rem));
+            self.modified = true;
+        }
+    }
+
+    /// Trim the last word off an active phantom (CTRL+BACKSPACE), removing it
+    /// from the buffer and shrinking the ghost.
+    fn phantom_trim_word(&mut self) {
+        let Some(rem) = self.phantom.take() else {
+            return;
+        };
+        let cur = self.cursor_pos();
+        let ws = text::last_word_start(&rem);
+        self.delete_span(text::advance(cur, &rem[..ws]), text::advance(cur, &rem));
+        // `delete_span` parked the cursor at the cut; put it back before the
+        // surviving ghost head.
+        self.move_to(cur);
+        self.modified = true;
+        let head = &rem[..ws];
+        if !head.trim().is_empty() {
+            self.phantom = Some(head.to_string());
+        }
     }
 
     /// The buffer's lines as owned strings, for the `core::text` algorithms.
@@ -362,6 +433,9 @@ impl Document {
     }
 
     fn save(&mut self) -> Result<PathBuf, String> {
+        // A pending phantom is ghost text, not document content — drop it so it
+        // never reaches disk.
+        self.phantom_discard();
         let path = self
             .path
             .clone()
@@ -418,9 +492,10 @@ pub struct App {
     next_id: DocId,
     /// PDF preview zoom (1.0 = pages fit the pane width).
     pub pdf_zoom: f32,
-    /// Whether CTRL is currently held — switches PDF wheel from scroll to
-    /// zoom (tracked from keyboard modifier events).
-    pub ctrl_held: bool,
+    /// The currently held modifier set (tracked from keyboard events). Drives
+    /// the sidebar keybind hints, the editor accent emphasis, and the PDF
+    /// wheel's scroll-vs-zoom toggle (CTRL).
+    pub modifiers: iced::keyboard::Modifiers,
     pub panes: pane_grid::State<PaneKind>,
     /// The pane that last received a click; gets the highlighted border.
     pub focused: pane_grid::Pane,
@@ -459,7 +534,7 @@ impl App {
             active: first_id,
             next_id: first_id + 1,
             pdf_zoom: 1.0,
-            ctrl_held: false,
+            modifiers: iced::keyboard::Modifiers::default(),
             panes,
             focused: first,
             sidebar: Sidebar::new(PathBuf::from(".")),
@@ -525,15 +600,14 @@ impl App {
         let mut subs = vec![
             window::close_requests().map(|_| Message::CloseRequested),
             iced::event::listen_with(on_escape),
+            // Track the held-modifier set: keybind hints, accent emphasis, and
+            // the PDF wheel's scroll-vs-zoom toggle all read it.
+            iced::event::listen_with(on_modifiers),
         ];
         if self.menu.is_some() {
             // The command bar's filter input ignores arrow keys, so they
             // arrive here and drive the list selection.
             subs.push(iced::event::listen_with(on_menu_arrows));
-        }
-        if matches!(self.active_doc().preview, Preview::Pdf(_)) {
-            // Track CTRL so the PDF wheel can switch between scroll and zoom.
-            subs.push(iced::event::listen_with(on_ctrl));
         }
         // Always-on 1 s tick: expires status messages and polls the config
         // files for hot-reload.
@@ -873,6 +947,50 @@ impl App {
                 let Some(doc) = self.docs.get_mut(&id) else {
                     return Task::none();
                 };
+                // A phantom intercepts editing: matching keystrokes fill the
+                // ghost in, others push it along, and anything else abandons it.
+                if doc.phantom.is_some() {
+                    match &action {
+                        text_editor::Action::Edit(text_editor::Edit::Insert(c)) => {
+                            let c = *c;
+                            let rem = doc.phantom.as_deref().unwrap_or_default();
+                            if rem.starts_with(c) {
+                                // Match: step over the ghost char (it stays in
+                                // the buffer, now solid) without inserting.
+                                let rest = rem[c.len_utf8()..].to_string();
+                                doc.content.perform(text_editor::Action::Move(
+                                    text_editor::Motion::Right,
+                                ));
+                                doc.phantom = (!rest.is_empty()).then_some(rest);
+                                doc.modified = true;
+                            } else {
+                                // Mismatch: insert normally; the ghost is pushed
+                                // to the right of the new character.
+                                doc.history.record(doc.snapshot(), !c.is_whitespace());
+                                doc.modified = true;
+                                doc.content.perform(action);
+                            }
+                            return Task::none();
+                        }
+                        text_editor::Action::Edit(text_editor::Edit::Backspace) => {
+                            // Backspace over a phantom discards the whole ghost.
+                            doc.history.record(doc.snapshot(), false);
+                            doc.phantom_discard();
+                            return Task::none();
+                        }
+                        text_editor::Action::Edit(_) | text_editor::Action::Move(_) => {
+                            // Other edits/moves abandon the ghost (sentence stays
+                            // deleted), then apply normally.
+                            doc.history.break_run();
+                            doc.phantom_discard();
+                            doc.content.perform(action);
+                            return Task::none();
+                        }
+                        // Clicks/drags/selection: abandon and let normal
+                        // handling below run.
+                        _ => doc.phantom_discard(),
+                    }
+                }
                 match &action {
                     text_editor::Action::Edit(edit) => {
                         let coalesce = matches!(
@@ -918,23 +1036,54 @@ impl App {
             }
             Message::DeleteSentence => {
                 let doc = self.active_doc_mut();
+                // A second SHIFT+BACKSPACE discards an existing phantom.
+                if doc.phantom.is_some() {
+                    doc.history.record(doc.snapshot(), false);
+                    doc.phantom_discard();
+                    return Task::none();
+                }
+                // Otherwise "delete" the current sentence into a phantom: the
+                // text stays in the buffer as dimmed ghost just after the
+                // cursor, ready to be typed back, accepted, or discarded.
                 let lines = doc.lines();
-                let pos = doc.content.cursor().position;
-                let cursor = (pos.line, pos.column);
+                let cursor = doc.cursor_pos();
                 if let Some(start) = text::sentence_start_before(&lines, cursor)
                     && start != cursor
                 {
                     doc.history.record(doc.snapshot(), false);
+                    doc.phantom = Some(text::slice(&lines, start, cursor));
+                    doc.move_to(start);
                     doc.modified = true;
-                    doc.content.move_to(text_editor::Cursor {
-                        position: pos,
-                        selection: Some(text_editor::Position {
-                            line: start.0,
-                            column: start.1,
-                        }),
-                    });
+                }
+                Task::none()
+            }
+            Message::DeleteWord => {
+                let doc = self.active_doc_mut();
+                if doc.phantom.is_some() {
+                    // Trim the last word off the phantom.
+                    doc.history.record(doc.snapshot(), false);
+                    doc.phantom_trim_word();
+                } else {
+                    // Delete the previous word (widget word semantics).
+                    doc.history.record(doc.snapshot(), false);
+                    doc.modified = true;
+                    doc.content
+                        .perform(text_editor::Action::Select(text_editor::Motion::WordLeft));
                     doc.content
                         .perform(text_editor::Action::Edit(text_editor::Edit::Backspace));
+                }
+                Task::none()
+            }
+            Message::PhantomAccept => {
+                let doc = self.active_doc_mut();
+                if doc.phantom.is_some() {
+                    doc.phantom_accept();
+                } else {
+                    // No phantom: behave like a normal Tab — insert a tab.
+                    doc.history.record(doc.snapshot(), false);
+                    doc.modified = true;
+                    doc.content
+                        .perform(text_editor::Action::Edit(text_editor::Edit::Insert('\t')));
                 }
                 Task::none()
             }
@@ -975,8 +1124,8 @@ impl App {
                 self.set_status(if ok { "compiled ✓" } else { "compile failed" });
                 Task::none()
             }
-            Message::CtrlChanged(held) => {
-                self.ctrl_held = held;
+            Message::ModifiersChanged(m) => {
+                self.modifiers = m;
                 Task::none()
             }
             Message::PdfScroll(delta) => {

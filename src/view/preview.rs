@@ -45,7 +45,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
 fn pdf<'a>(app: &'a App, pages: &'a [crate::app::PdfPage]) -> Element<'a, Message> {
     let zoom = app.pdf_zoom;
-    let ctrl = app.ctrl_held;
+    let ctrl = app.modifiers.control();
 
     // `responsive` hands us the pane width so a zoom of 1.0 fits the page to
     // the pane; higher zoom overflows and the scrollable pans horizontally.

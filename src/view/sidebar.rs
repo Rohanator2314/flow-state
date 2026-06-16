@@ -8,8 +8,8 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use iced::widget::{button, column, container, scrollable, text, text_input};
-use iced::{Background, Border, Element, Fill, Padding};
+use iced::widget::{button, column, container, row, scrollable, text, text_input};
+use iced::{Background, Border, Element, Fill, Font, Padding};
 
 use crate::app::{App, Message};
 
@@ -161,12 +161,98 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .size(13)
         .padding(8);
 
-    container(column![header, scrollable(tree).height(Fill), new_file].spacing(8))
+    container(
+        column![
+            header,
+            scrollable(tree).height(Fill),
+            keybind_hints(app),
+            new_file
+        ]
+        .spacing(8),
+    )
         .width(230)
         .height(Fill)
         .padding(Padding::new(6.0).top(10.0))
         .style(move |_| container::Style {
             background: Some(Background::Color(theme.surface)),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// A live keybind cheat-sheet shown just above the new-file input. It reacts
+/// to the held-modifier set — holding CTRL/SHIFT/ALT reveals exactly the
+/// bindings that need that key — and, while a phantom is active, lists the
+/// phantom controls instead. Pairs with the in-editor accent emphasis: the
+/// word/sentence a BACKSPACE would hit is highlighted as the keys appear here.
+fn keybind_hints(app: &App) -> Element<'_, Message> {
+    let theme = &app.theme;
+    let m = app.modifiers;
+    let phantom = app.active_doc().phantom.is_some();
+
+    let (heading, rows): (&str, Vec<(&str, &str)>) = if phantom {
+        (
+            "phantom",
+            vec![
+                ("⇥", "accept"),
+                ("⌃⌫", "drop last word"),
+                ("⇧⌫", "discard"),
+            ],
+        )
+    } else if m.control() && m.shift() {
+        ("⌃⇧", vec![("⌃⇧Z", "redo")])
+    } else if m.control() {
+        (
+            "⌃ held",
+            vec![
+                ("⌃S", "save & preview"),
+                ("⌃Z", "undo"),
+                ("⌃Y", "redo"),
+                ("⌃⌫", "delete word"),
+            ],
+        )
+    } else if m.shift() {
+        ("⇧ held", vec![("⇧⌫", "delete sentence")])
+    } else if m.alt() {
+        (
+            "⌥ held",
+            vec![
+                ("⌥W / ⌥B", "next / prev word"),
+                ("⌥N / ⌥⇧N", "next / prev paragraph"),
+            ],
+        )
+    } else {
+        (
+            "hold a key",
+            vec![
+                ("⌃", "save · undo · word"),
+                ("⇧", "delete sentence"),
+                ("⌥", "word · paragraph nav"),
+            ],
+        )
+    };
+
+    let mut list = column![text(heading).size(10).color(theme.text_inactive)].spacing(3);
+    for (key, action) in rows {
+        list = list.push(
+            row![
+                text(key)
+                    .size(11)
+                    .font(Font::MONOSPACE)
+                    .color(theme.accent)
+                    .width(70),
+                text(action).size(11).color(theme.text_inactive),
+            ]
+            .spacing(6),
+        );
+    }
+
+    container(list)
+        .width(Fill)
+        .padding(Padding::from([8.0, 10.0]))
+        .style(move |_| container::Style {
+            background: Some(Background::Color(theme.background)),
+            border: Border::default().rounded(6),
             ..container::Style::default()
         })
         .into()

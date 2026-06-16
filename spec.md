@@ -75,13 +75,43 @@ editing (selection, clipboard, mouse) works as expected.
 | Arrows, HOME/END, CTRL+arrows, mouse | Standard movement/selection (widget defaults) |
 | ALT+W / ALT+B | Move to the next / previous word |
 | ALT+N / ALT+SHIFT+N | Jump to next / previous paragraph |
-| CTRL+BACKSPACE | Delete the word before the cursor |
-| SHIFT+BACKSPACE | Delete from the start of the current sentence to the cursor |
+| CTRL+BACKSPACE | Delete the word before the cursor (or trim the last word off an active phantom) |
+| SHIFT+BACKSPACE | "Delete" the current sentence into a phantom (press again to discard it) |
+| TAB | Accept the active phantom (otherwise inserts a tab) |
 | CTRL+Z | Undo (full session history, unlimited depth) |
 | CTRL+SHIFT+Z / CTRL+Y | Redo |
 | CTRL+S | Save, then compile/refresh the preview |
 | CTRL+C/X/V | Clipboard (widget defaults) |
 | ESC | Open the command bar / back out one level; also dismisses dialogs |
+
+### Live keybind hints & emphasis
+
+The sidebar shows a small keybind cheat-sheet just above the new-file input
+that reacts to the modifiers being held: with nothing held it lists which keys
+do what; holding CTRL, SHIFT, or ALT reveals exactly that key's bindings. In
+step with it, the focused editor paints — in the **accent color** — the text
+the matching BACKSPACE would remove: holding **CTRL** emphasizes the previous
+word (CTRL+BACKSPACE's target), holding **SHIFT** emphasizes the current
+sentence (SHIFT+BACKSPACE's target). (The stock `text_editor` highlighter can
+recolor text but not underline it, so emphasis is shown as a color change.)
+
+### Phantom (deleted-sentence recall)
+
+SHIFT+BACKSPACE does not hard-delete the sentence; it turns it into a
+**phantom**: the deleted text stays in the buffer as dimmed ghost text right
+after the cursor, and the sidebar switches to the phantom controls. From there:
+
+- **Typing it back** — a keystroke matching the next ghost character "fills it
+  in" (the character turns solid and the cursor steps over it); a
+  non-matching keystroke is inserted normally and *pushes* the rest of the
+  ghost along to its right.
+- **TAB** accepts the whole phantom (it becomes real text again).
+- **SHIFT+BACKSPACE** again discards the phantom entirely (the sentence stays
+  gone).
+- **CTRL+BACKSPACE** drops just the phantom's last word.
+- Any other edit, a click, or moving the caret abandons the phantom (the
+  sentence stays gone); undo/redo and saving also clear it. A phantom is ghost
+  state, never written to disk.
 
 Closing the window with unsaved changes opens a save / discard / cancel
 dialog. (CTRL+E is reserved for a future fuzzy quick-open palette.)

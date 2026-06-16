@@ -113,12 +113,129 @@ pub fn sentence_start_before(lines: &[String], cursor: Pos) -> Option<Pos> {
     }
 }
 
+/// The byte range `[start, cursor)` on the cursor's line that a "delete
+/// previous word" (CTRL+BACKSPACE) would remove — i.e. the word the cursor
+/// sits after, including the whitespace between it and the cursor. Used to
+/// highlight that word while CTRL is held. Stays within the current line (the
+/// highlight is a hint); returns `None` if there is no word before the cursor
+/// on this line.
+pub fn word_before(lines: &[String], cursor: Pos) -> Option<(Pos, Pos)> {
+    let (line, col) = cursor;
+    let text = lines.get(line)?;
+    let col = col.min(text.len());
+    let chars: Vec<(usize, char)> = text[..col].char_indices().collect();
+    let mut i = chars.len();
+    while i > 0 && chars[i - 1].1.is_whitespace() {
+        i -= 1;
+    }
+    let word_end = i;
+    while i > 0 && !chars[i - 1].1.is_whitespace() {
+        i -= 1;
+    }
+    if i == word_end {
+        return None; // only whitespace (or nothing) before the cursor
+    }
+    let start = chars[i].0;
+    Some(((line, start), (line, col)))
+}
+
+/// Byte offset where the last word of `s` begins (skipping any trailing
+/// whitespace first), or 0 if `s` has no word. Used to trim the final word
+/// off a phantom with CTRL+BACKSPACE.
+pub fn last_word_start(s: &str) -> usize {
+    let chars: Vec<(usize, char)> = s.char_indices().collect();
+    let mut i = chars.len();
+    while i > 0 && chars[i - 1].1.is_whitespace() {
+        i -= 1;
+    }
+    while i > 0 && !chars[i - 1].1.is_whitespace() {
+        i -= 1;
+    }
+    chars.get(i).map(|(b, _)| *b).unwrap_or(0)
+}
+
+/// The text between two positions `[a, b)`, with `\n` rejoining lines. Used to
+/// capture a deleted sentence as a phantom.
+pub fn slice(lines: &[String], a: Pos, b: Pos) -> String {
+    let ((al, ac), (bl, bc)) = (a, b);
+    if al == bl {
+        return lines
+            .get(al)
+            .and_then(|l| l.get(ac..bc))
+            .unwrap_or("")
+            .to_string();
+    }
+    let mut out = String::new();
+    if let Some(l) = lines.get(al) {
+        out.push_str(l.get(ac..).unwrap_or(""));
+    }
+    out.push('\n');
+    for line in lines.get(al + 1..bl).unwrap_or(&[]) {
+        out.push_str(line);
+        out.push('\n');
+    }
+    if let Some(l) = lines.get(bl) {
+        out.push_str(l.get(..bc).unwrap_or(""));
+    }
+    out
+}
+
+/// The position reached by walking `s` forward from `start`, advancing the
+/// line on each `\n` and the byte column otherwise. Used to find where a
+/// phantom (a run of text sitting just after the cursor) ends.
+pub fn advance(start: Pos, s: &str) -> Pos {
+    let (mut line, mut col) = start;
+    for ch in s.chars() {
+        if ch == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += ch.len_utf8();
+        }
+    }
+    (line, col)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn lines(text: &str) -> Vec<String> {
         text.split('\n').map(str::to_string).collect()
+    }
+
+    #[test]
+    fn word_before_picks_the_preceding_word() {
+        let l = lines("hello world");
+        // Cursor at end: the word "world" (no trailing ws) is [6, 11).
+        assert_eq!(word_before(&l, (0, 11)), Some(((0, 6), (0, 11))));
+        // Cursor after "hello " (col 6): "hello" plus the trailing space.
+        assert_eq!(word_before(&l, (0, 6)), Some(((0, 0), (0, 6))));
+        // Start of line: nothing before.
+        assert_eq!(word_before(&l, (0, 0)), None);
+    }
+
+    #[test]
+    fn last_word_start_finds_final_word() {
+        assert_eq!(last_word_start("delete this sentence"), 12);
+        assert_eq!(last_word_start("trailing space "), 9);
+        assert_eq!(last_word_start("word"), 0);
+        assert_eq!(last_word_start("   "), 0);
+    }
+
+    #[test]
+    fn slice_extracts_spans() {
+        let l = lines("First one. Second part here");
+        assert_eq!(slice(&l, (0, 11), (0, 27)), "Second part here");
+        let m = lines("Stays. Sentence broken\nacross lines here");
+        assert_eq!(slice(&m, (0, 7), (1, 17)), "Sentence broken\nacross lines here");
+    }
+
+    #[test]
+    fn advance_walks_over_newlines() {
+        assert_eq!(advance((0, 3), "ab"), (0, 5));
+        assert_eq!(advance((0, 3), "a\nbc"), (1, 2));
+        assert_eq!(advance((2, 0), "one\ntwo\n"), (4, 0));
     }
 
     #[test]

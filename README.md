@@ -39,12 +39,24 @@ resize, 🗖 to maximize, ✕ to close a pane.
 | Arrows / CTRL+arrows / mouse | Standard movement & selection |
 | `ALT+W` / `ALT+B` | Next / previous word |
 | `ALT+N` / `ALT+SHIFT+N` | Next / previous paragraph |
-| `CTRL+BACKSPACE` | Delete previous word |
-| `SHIFT+BACKSPACE` | Delete current sentence up to the cursor |
+| `CTRL+BACKSPACE` | Delete previous word (or trim a phantom's last word) |
+| `SHIFT+BACKSPACE` | "Delete" the current sentence into a phantom |
+| `TAB` | Accept the active phantom (else insert a tab) |
 | `CTRL+Z` / `CTRL+SHIFT+Z` / `CTRL+Y` | Undo / redo |
 | `CTRL+S` | Save, then refresh/compile the preview |
 | `CTRL+C/X/V` | Clipboard |
 | `ESC` | Open the command bar / go back / close |
+
+The sidebar shows a live keybind cheat-sheet above the new-file input that
+changes with the modifier you hold (CTRL/SHIFT/ALT); while a key is held, the
+editor highlights — in the accent color — the word or sentence its BACKSPACE
+would delete.
+
+**Phantoms.** `SHIFT+BACKSPACE` doesn't hard-delete the sentence — it leaves a
+dimmed "phantom" of it after the cursor. Type the same letters to fill it back
+in (different letters push it along), `TAB` to accept it, `SHIFT+BACKSPACE`
+again to discard it, or `CTRL+BACKSPACE` to drop its last word. Phantoms are
+never saved to disk.
 
 Closing the window with unsaved changes asks save / discard / cancel.
 
