@@ -1,0 +1,37 @@
+or = "#e46876"     # waveRed
+ning = "#e6c384"   # carpYellow
+info = "#7fb4ca"      # springBlue
+
+[buffer]
+background = "#1f1f28"            # sumiInk3 (writing canvas)
+background_title_bar = "#16161d"  # sumiInk0
+border = "#2a2a37"               # sumiInk4
+border_selected = "#7e9cd8"      # crystalBlue
+selection = "#2d4f67"            # waveBlue2
+highlight = "#223249"            # waveBlue1
+url = "#7fb4ca"
+
+[buttons.primary]
+background = "#1f1f28"
+background_hover = "#2a2a37"
+background_selected = "#363646"
+background_selected_hover = "#2d4f67"
+
+[buttons.secondary]
+background = "#16161d"
+background_hover = "#2a2a37"
+background_selected = "#363646"
+background_selected_hover = "#2d4f67"
+
+[formatting]
+white = "#dcd7ba"
+black = "#16161d"
+blue = "#7e9cd8"
+green = "#98bb6c"
+red = "#e46876"
+magenta = "#957fb8"
+orange = "#ffa066"
+yellow = "#e6c384"
+cyan = "#7fb4ca"
+pink = "#d27e99"
+grey = "#727169"

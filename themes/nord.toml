@@ -1,0 +1,36 @@
+# Nord — halloy theme format. https://www.nordtheme.com/
+
+[general]
+background = "#3b4252"
+border = "#434c5e"
+unread_indicator = "#88c0d0"
+highlight_indicator = "#ebcb8b"
+
+[text]
+primary = "#eceff4"
+secondary = "#d8dee9"
+tertiary = "#81a1c1"
+success = "#a3be8c"
+error = "#bf616a"
+warning = "#ebcb8b"
+info = "#88c0d0"
+
+[buffer]
+background = "#2e3440"
+background_title_bar = "#2e3440"
+border = "#434c5e"
+border_selected = "#88c0d0"
+selection = "#434c5e"
+url = "#88c0d0"
+
+[formatting]
+white = "#eceff4"
+black = "#2e3440"
+blue = "#81a1c1"
+green = "#a3be8c"
+red = "#bf616a"
+magenta = "#b48ead"
+orange = "#d08770"
+yellow = "#ebcb8b"
+cyan = "#88c0d0"
+grey = "#4c566a"

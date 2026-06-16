@@ -1,0 +1,7 @@
+/target
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.pdf
+test.tex

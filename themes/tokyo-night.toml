@@ -1,0 +1,37 @@
+# Tokyo Night (Storm) — halloy theme format.
+# https://github.com/enkia/tokyo-night-vscode-theme
+
+[general]
+background = "#24283b"
+border = "#292e42"
+unread_indicator = "#7aa2f7"
+highlight_indicator = "#e0af68"
+
+[text]
+primary = "#c0caf5"
+secondary = "#a9b1d6"
+tertiary = "#7dcfff"
+success = "#9ece6a"
+error = "#f7768e"
+warning = "#e0af68"
+info = "#7aa2f7"
+
+[buffer]
+background = "#1f2335"
+background_title_bar = "#1f2335"
+border = "#292e42"
+border_selected = "#7aa2f7"
+selection = "#292e42"
+url = "#7dcfff"
+
+[formatting]
+white = "#c0caf5"
+black = "#1f2335"
+blue = "#7aa2f7"
+green = "#9ece6a"
+red = "#f7768e"
+magenta = "#bb9af7"
+orange = "#ff9e64"
+yellow = "#e0af68"
+cyan = "#7dcfff"
+grey = "#565f89"

@@ -1,0 +1,38 @@
+# Catppuccin Latte (light) — halloy theme format.
+# https://github.com/catppuccin/catppuccin
+
+[general]
+background = "#eff1f5"        # base
+border = "#ccd0da"            # surface0
+unread_indicator = "#8839ef"  # mauve
+highlight_indicator = "#df8e1d"
+
+[text]
+primary = "#4c4f69"   # text
+secondary = "#6c6f85" # subtext0
+tertiary = "#7287fd"  # lavender
+success = "#40a02b"   # green
+error = "#d20f39"     # red
+warning = "#df8e1d"   # yellow
+info = "#1e66f5"      # blue
+
+[buffer]
+background = "#e6e9ef"            # mantle
+background_title_bar = "#dce0e8"  # crust
+border = "#ccd0da"               # surface0
+border_selected = "#7287fd"      # lavender
+selection = "#bcc0cc"            # surface1
+url = "#1e66f5"
+
+[formatting]
+white = "#4c4f69"
+black = "#dce0e8"
+blue = "#1e66f5"
+green = "#40a02b"
+red = "#d20f39"
+magenta = "#8839ef"
+orange = "#fe640b"
+yellow = "#df8e1d"
+cyan = "#179299"
+pink = "#ea76cb"
+grey = "#9ca0b0"
