@@ -27,7 +27,7 @@ off-thread via `Task::perform` and returns as a message.
             ├ text.rs    paragraphs,      ├ mod.rs      layout, status bar
             │            sentence scan    ├ sidebar.rs  directory tree
             ├ undo.rs    snapshot history ├ editor.rs   text_editor, keymap,
-            ├ latex.rs   pdflatex→pdftoppm│             dimming highlighter
+            ├ latex.rs   pdflatex→pdftoppm│             dim/emphasis/phantom hl
             ├ theme.rs   halloy TOML→Color├ preview.rs  markdown / PDF pages
             ├ fonts.rs   system font list ├ dialogs.rs  modals
             └ config.rs  config.toml      ├ menu.rs     ESC command bar
@@ -66,6 +66,13 @@ off-thread via `Task::perform` and returns as a message.
 - **Undo is ours.** iced has no editor history; `app.rs` records a
   `core::undo` snapshot before every `Action::Edit` (coalescing typing runs)
   and restores Content + cursor on undo/redo.
+- **Phantoms live inside the Content.** The stock `text_editor` renders only
+  its own `Content`, so a "phantom" (the recall ghost of a deleted sentence)
+  is real buffer text kept dimmed by the highlighter, tracked as
+  `Document::phantom: Option<String>` (the not-yet-resolved ghost, sitting
+  immediately after the cursor). It is therefore stripped on save, and dropped
+  on undo/redo or abandon — it is never document content. See the phantom
+  recipe below.
 - **Key semantics live in one place**: `view/editor.rs::key_binding` maps
   key presses to `Binding`s/`Message`s; unclaimed keys fall through to the
   widget defaults. Dialogs are modal — when one is open, the view simply
@@ -81,6 +88,40 @@ For a new behavior: add a `Message` variant, bind it
 (`Binding::Custom(Message::…)`), handle it in `App::update`. Simple motions
 or edits can often be expressed without a message at all via
 `Binding::Sequence` of built-ins (see CTRL+BACKSPACE).
+
+**Highlight a span in the editor (color only).** The dimming highlighter
+(`view/editor.rs::DimHighlighter`) is the one hook for recoloring editor text.
+Its `DimSettings` carry the active-paragraph line range plus optional
+`emphasis` (accent) and `ghost` (dim) spans as `(start, end)` `(line, col)`
+positions; `highlight_line` splits each line at the span boundaries and colors
+each segment (emphasis over ghost over the base dim/active color). The view
+recomputes the settings every frame from cursor + `App::modifiers` + phantom,
+and the widget re-runs the highlighter whenever the settings change. Note the
+hard limit: iced's highlighter `Format` exposes only `color` and `font` — **no
+underline or background** — so "emphasis" is a color change, not an underline.
+True underline (and the paragraph glow/centering) is what the planned custom
+editor widget is for.
+
+**React to held modifiers** (keybind hints, accent emphasis, PDF zoom). The
+held-modifier set is tracked by the always-on `on_modifiers` subscription into
+`App::modifiers`. Read it in `view/` to drive UI: `sidebar::keybind_hints`
+picks its rows from it (and from whether a phantom is active), and
+`editor::view` derives the emphasis span from it (CTRL → `text::word_before`,
+SHIFT → `text::sentence_start_before`). There is no per-key plumbing — just
+read `app.modifiers` wherever the UI should react.
+
+**The phantom lifecycle** (deleted-sentence recall) is split between
+`Message::DeleteSentence` (creates it: the sentence text is sliced out with
+`text::slice`, stored in `Document::phantom`, and the cursor moved before it)
+and the `Message::Edit` interception in `App::update`: while a phantom is
+active, a matching `Insert` steps over the ghost (`Motion::Right`, no insert),
+a non-matching `Insert` is performed normally (pushing the ghost right), and
+any other action abandons it. `Document` owns the mechanics —
+`phantom_discard`/`phantom_accept`/`phantom_trim_word` and the `delete_span`
+helper — using `text::advance` to map the ghost string onto buffer positions.
+TAB (`PhantomAccept`) and CTRL+BACKSPACE (`DeleteWord`) branch on the phantom
+in their own arms. Anything that rebuilds the Content (`restore`) or persists
+it (`save`) clears the phantom first.
 
 **Add a preview for a new file type.** Add a `FileKind` variant and its
 extension in `core/mod.rs`; produce the preview in `App::refresh_preview`
@@ -139,8 +180,8 @@ deliberately does **not** bind ESC (that would double-fire).
 
 **PDF preview scroll vs. zoom** (`view/preview.rs`): pages are stacked in a
 `scrollable` for smooth page scrolling. Holding CTRL flips the wheel to
-zoom — tracked by the `on_ctrl` subscription (active only while a PDF is
-shown) setting `App::ctrl_held`. While held, the view wraps the pages in a
+zoom — read from `App::modifiers` (kept current by the always-on
+`on_modifiers` subscription). While held, the view wraps the pages in a
 `mouse_area` whose `on_scroll` *captures* the wheel (so the scrollable does
 not also move) and feeds `Message::PdfScroll`, which scales `App::pdf_zoom`.
 The capture works because a `mouse_area` nested inside the scrollable
@@ -172,9 +213,12 @@ pane closure, and create/close it in `App::sync_preview_pane` (or a sibling).
 
 ## Known limitations / future work
 
-- Typewriter vertical centering of the active paragraph needs a custom
-  editor widget (`text_editor` exposes no scroll control; `Action::Scroll`
-  exists but is relative with no readback).
+- A custom editor widget is planned for the effects the stock `text_editor`
+  cannot do: typewriter vertical centering of the active paragraph (it exposes
+  no scroll control; `Action::Scroll` is relative with no readback), a
+  per-character **underline** (the highlighter `Format` has color/font only),
+  and an active-paragraph **glow**. Until then, paragraph focus is the dim
+  highlighter and "emphasis" is an accent color rather than an underline.
 - Themes load a subset of halloy's schema (the writing-app surfaces); halloy's
   light/dark dynamic pairs and multi-theme random selection are not supported.
 - Sentence detection treats every `.?!` as a boundary (`e.g.` ends a
