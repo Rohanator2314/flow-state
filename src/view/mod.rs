@@ -17,6 +17,7 @@ pub mod menu;
 pub mod preview;
 pub mod sidebar;
 pub mod style;
+pub mod widget;
 
 use iced::border::Radius;
 use iced::widget::{button, center, column, container, pane_grid, row, text};

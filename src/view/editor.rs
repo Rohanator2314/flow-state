@@ -22,9 +22,8 @@ use std::ops::Range;
 use iced::advanced::text::highlighter::Format;
 use iced::keyboard::key::Named;
 use iced::keyboard::Key;
-// `text_editor` is both the module (types) and the helper function.
-use iced::widget::text_editor;
-use iced::widget::text_editor::{Binding, KeyPress, Motion};
+// Our vendored, extended fork of iced's `text_editor` (see view::widget).
+use crate::view::widget::text_editor::{self, Binding, KeyPress, Motion, TextEditor};
 use iced::{Background, Border, Color, Element, Fill, Task};
 
 use crate::app::{App, DocId, Message};
@@ -92,7 +91,7 @@ pub fn view(app: &App, id: DocId) -> Element<'_, Message> {
         ghost,
     };
 
-    text_editor(&doc.content)
+    TextEditor::new(&doc.content)
         .id(editor_id(id))
         .on_action(move |action| Message::Edit(id, action))
         .key_binding(key_binding)

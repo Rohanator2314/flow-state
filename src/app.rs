@@ -15,8 +15,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use iced::widget::{image, markdown, pane_grid, text_editor};
+use iced::widget::{image, markdown, pane_grid};
 use iced::{window, Element, Subscription, Task, Theme};
+
+use crate::view::widget::text_editor;
 
 use crate::core::config::Config;
 use crate::core::theme::Theme as FlowTheme;

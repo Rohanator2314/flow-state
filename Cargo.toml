@@ -11,6 +11,9 @@ fontdb = "0.23"
 iced = { version = "0.14", features = ["markdown", "image", "tokio", "advanced"] }
 image = "0.25.10"
 serde = { version = "1.0.228", features = ["derive"] }
+# Matches the version iced 0.14 uses; needed by the vendored text_editor
+# (`KeyPress::text`). See src/view/widget/text_editor.rs.
+smol_str = "0.2"
 tokio = { version = "1.52.3", features = ["rt"] }
 toml = "1.1.2"
 walkdir = "2.5.0"
