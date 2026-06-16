@@ -77,7 +77,8 @@ pub enum Message {
     /// CTRL+TAB — move focus to the next pane.
     NextPane,
     // in-pane find (CTRL+F)
-    OpenSearch,
+    /// CTRL+F: open the find bar, or close it if already open.
+    ToggleSearch,
     SearchInput(String),
     SearchNext,
     SearchPrev,
@@ -258,6 +259,48 @@ fn on_modifiers(
         iced::Event::Keyboard(Event::ModifiersChanged(m)) => {
             Some(Message::ModifiersChanged(m))
         }
+        _ => None,
+    }
+}
+
+/// Subscription filter: CTRL+F toggles the find bar. Global (not an editor
+/// keybind) so it fires regardless of which widget has focus — in particular it
+/// can *close* the bar, when the find input is focused and the editor's keymap
+/// would never run.
+fn on_find_toggle(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    use iced::keyboard::{Event, Key};
+    match event {
+        iced::Event::Keyboard(Event::KeyPressed { key, modifiers, .. })
+            if modifiers.control() && matches!(key.as_ref(), Key::Character("f")) =>
+        {
+            Some(Message::ToggleSearch)
+        }
+        _ => None,
+    }
+}
+
+/// Subscription filter (active only while the find bar is open): ALT+N / ALT+
+/// SHIFT+N step to the next / previous match. Attached only when searching, so
+/// ALT+N keeps its paragraph-navigation meaning the rest of the time.
+fn on_find_nav(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    use iced::keyboard::{Event, Key};
+    let iced::Event::Keyboard(Event::KeyPressed { key, modifiers, .. }) = event else {
+        return None;
+    };
+    if !modifiers.alt() {
+        return None;
+    }
+    match key.as_ref() {
+        Key::Character("n") if modifiers.shift() => Some(Message::SearchPrev),
+        Key::Character("n") => Some(Message::SearchNext),
         _ => None,
     }
 }
@@ -652,7 +695,13 @@ impl App {
             // Track the held-modifier set: keybind hints, accent emphasis, and
             // the PDF wheel's scroll-vs-zoom toggle all read it.
             iced::event::listen_with(on_modifiers),
+            // CTRL+F toggles find from anywhere (so it can also close the bar).
+            iced::event::listen_with(on_find_toggle),
         ];
+        if self.search.is_some() {
+            // ALT+N / ALT+SHIFT+N step matches only while the bar is open.
+            subs.push(iced::event::listen_with(on_find_nav));
+        }
         if self.menu.is_some() {
             // The command bar's filter input ignores arrow keys, so they
             // arrive here and drive the list selection.
@@ -1356,6 +1405,10 @@ impl App {
                 Task::none()
             }
             Message::PaneClicked(pane) => {
+                // Clicking into a pane focuses the editor; close the find bar so
+                // it doesn't linger with the editor focused (which would let
+                // ALT+N both step matches and move paragraphs).
+                self.search = None;
                 self.set_focus(pane);
                 Task::none()
             }
@@ -1634,15 +1687,20 @@ impl App {
                 }
                 Task::none()
             }
-            Message::OpenSearch => {
-                if self.search.is_none() {
+            Message::ToggleSearch => {
+                if self.search.take().is_some() {
+                    // Second CTRL+F closes the bar and returns to the editor.
+                    view::editor::focus(self.active)
+                } else if self.menu.is_some() || self.confirm.is_some() {
+                    Task::none() // don't pop find over a modal
+                } else {
                     let origin = self.active_doc().cursor_pos();
                     self.search = Some(Search {
                         origin,
                         ..Search::default()
                     });
+                    view::search::focus_input()
                 }
-                view::search::focus_input()
             }
             Message::SearchInput(query) => {
                 self.run_search(query);

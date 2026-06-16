@@ -2,10 +2,13 @@
 //!
 //! A small, non-modal bar anchored at the top-right of the window (it does not
 //! darken or capture the editor behind it, so the highlighted match stays
-//! visible). Typing re-runs the search over the focused document; ENTER and the
-//! ‹/› buttons step between matches; ESC (or ✕) closes it and returns focus to
-//! the editor. All state lives in [`App::search`](crate::app::App); this module
-//! only renders it and exposes the input's focus [`Task`].
+//! visible). Typing re-runs the search over the focused document; ENTER, ALT+N
+//! and the ‹/› buttons step between matches (ALT+SHIFT+N steps back); ESC, the
+//! ✕ button, or a second CTRL+F closes it and returns focus to the editor. All
+//! state lives in [`App::search`](crate::app::App); this module only renders it
+//! and exposes the input's focus [`Task`]. CTRL+F and the ALT+N stepping are
+//! global subscriptions in `app.rs`, since the find input — not the editor —
+//! holds focus while the bar is open.
 
 use iced::widget::{button, container, row, text, text_input};
 use iced::{Background, Border, Color, Element, Task};

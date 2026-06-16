@@ -220,7 +220,9 @@ fn custom_binding(press: &KeyPress) -> Option<Binding<Message>> {
         // where the writer almost always is.
         Key::Character("n") if m.control() => Some(Binding::Custom(Message::NewFile)),
         Key::Character("o") if m.control() => Some(Binding::Custom(Message::OpenFilePicker)),
-        Key::Character("f") if m.control() => Some(Binding::Custom(Message::OpenSearch)),
+        // CTRL+F (toggle find) is handled by a global subscription in `app.rs`,
+        // so it works to *close* the bar too — at which point the editor is
+        // unfocused and this keymap wouldn't run.
         Key::Character("w") if m.control() => {
             Some(Binding::Custom(Message::CloseActivePane))
         }
