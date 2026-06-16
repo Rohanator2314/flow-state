@@ -55,35 +55,44 @@ pub fn view(app: &App) -> Element<'_, Message> {
             ..container::Style::default()
         });
 
-    let mut base: Element<'_, Message> = column![
+    let base: Element<'_, Message> = column![
         row![sidebar::view(app), shell].height(Fill),
         status_bar(app)
     ]
     .into();
 
+    // The root is ALWAYS a stack with `base` at layer 0, even with no overlays.
+    // Keeping the root widget type and `base`'s position stable means iced never
+    // rebuilds the editor's subtree state when an overlay opens or closes — so
+    // the editor keeps its focus (and visible cursor) across the find bar, the
+    // command bar, and the dialogs.
+    let mut layers: Vec<Element<'_, Message>> = Vec::with_capacity(3);
+    layers.push(base);
+
     // The find bar is a non-modal overlay (no backdrop) so the matched text
     // stays visible behind it; clicks outside the bar fall through to the
     // editor. Stacked under the modal dialogs below so a dialog still wins.
     if app.search.is_some() {
-        let anchored = container(search::bar(app))
-            .width(Fill)
-            .height(Fill)
-            .align_x(iced::Right)
-            .align_y(iced::Top)
-            .padding(Padding::new(10.0));
-        base = stack![base, anchored].into();
+        layers.push(
+            container(search::bar(app))
+                .width(Fill)
+                .height(Fill)
+                .align_x(iced::Right)
+                .align_y(iced::Top)
+                .padding(Padding::new(10.0))
+                .into(),
+        );
     }
 
     if let Some(pending) = &app.confirm {
-        return dialogs::modal(base, dialogs::confirm(app, pending));
+        layers.push(dialogs::modal_layer(dialogs::confirm(app, pending)));
+    } else if let Some(error) = &app.active_doc().compile_error {
+        layers.push(dialogs::modal_layer(dialogs::compile_error(app, error)));
+    } else if let Some(menu) = &app.menu {
+        layers.push(dialogs::modal_top_layer(menu::view(app, menu)));
     }
-    if let Some(error) = &app.active_doc().compile_error {
-        return dialogs::modal(base, dialogs::compile_error(app, error));
-    }
-    if let Some(menu) = &app.menu {
-        return dialogs::modal_top(base, menu::view(app, menu));
-    }
-    base
+
+    stack(layers).width(Fill).height(Fill).into()
 }
 
 /// Pane body card: rounded, 1px border, highlighted when focused.

@@ -1358,7 +1358,7 @@ impl App {
             }
             Message::DismissError => {
                 self.active_doc_mut().compile_error = None;
-                Task::none()
+                view::editor::focus(self.active)
             }
             Message::LinkClicked(uri) => {
                 self.set_status(format!("link: {uri}"));
@@ -1395,16 +1395,19 @@ impl App {
                     Some(PaneKind::Editor(id)) => {
                         let id = *id;
                         if self.docs.get(&id).is_some_and(|d| d.modified) {
-                            // Confirm before discarding unsaved changes.
+                            // Confirm before discarding unsaved changes; the
+                            // dialog takes over, so don't refocus the editor.
                             self.confirm = Some(PendingAction::ClosePane(pane));
-                        } else {
-                            self.close_pane(pane);
+                            return Task::none();
                         }
+                        self.close_pane(pane);
                     }
                     Some(PaneKind::Preview) => self.close_pane(pane),
-                    None => {}
+                    None => return Task::none(),
                 }
-                Task::none()
+                // Closing moved focus to a sibling pane — give the editor the
+                // keyboard back so the cursor is live without a click.
+                view::editor::focus(self.active)
             }
 
             Message::EscPressed => {
@@ -1727,7 +1730,7 @@ impl App {
                         match self.docs.get_mut(&id).map(|d| d.save()) {
                             Some(Ok(_)) => {
                                 self.close_pane(pane);
-                                Task::none()
+                                view::editor::focus(self.active)
                             }
                             Some(Err(e)) => {
                                 self.set_status(format!("save failed: {e}"));
@@ -1746,13 +1749,13 @@ impl App {
                     PendingAction::CloseWindow => iced::exit(),
                     PendingAction::ClosePane(pane) => {
                         self.close_pane(pane);
-                        Task::none()
+                        view::editor::focus(self.active)
                     }
                 }
             }
             Message::ConfirmCancel => {
                 self.confirm = None;
-                Task::none()
+                view::editor::focus(self.active)
             }
             Message::Tick => {
                 if let Some((_, since)) = &self.status

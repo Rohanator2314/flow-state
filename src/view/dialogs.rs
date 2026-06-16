@@ -1,37 +1,33 @@
 //! Modal dialogs: the unsaved-changes prompt and the compile-error overlay.
 //!
-//! Modals are the standard iced recipe: `stack![base, backdrop(dialog)]`
-//! where the backdrop is an opaque, darkened mouse-catcher so the UI behind
-//! is visible but inert.
+//! Modals are the standard iced recipe — a darkened, opaque mouse-catcher with
+//! the dialog centered on it, so the UI behind is visible but inert. These
+//! return just the *overlay layer*; `view` stacks it over a base that always
+//! stays at stack layer 0, so the editor's widget tree (and its focus state)
+//! never shifts when a dialog opens or closes.
 
 use iced::widget::{
-    button, center, column, container, mouse_area, opaque, row, scrollable, stack, text,
+    button, center, column, container, mouse_area, opaque, row, scrollable, text,
 };
 use iced::{Background, Border, Color, Element, Font, Shadow};
 
 use crate::app::{App, Message, PendingAction};
 
-/// Lay `dialog` over `base` with a darkened backdrop.
-pub fn modal<'a>(
-    base: Element<'a, Message>,
-    dialog: Element<'a, Message>,
-) -> Element<'a, Message> {
+/// The darkened, centered overlay layer carrying `dialog`.
+pub fn modal_layer(dialog: Element<'_, Message>) -> Element<'_, Message> {
     let backdrop = center(opaque(dialog)).style(backdrop_style);
-    stack![base, opaque(mouse_area(backdrop))].into()
+    opaque(mouse_area(backdrop))
 }
 
-/// Like [`modal`], but anchored near the top — where a command bar belongs.
-pub fn modal_top<'a>(
-    base: Element<'a, Message>,
-    dialog: Element<'a, Message>,
-) -> Element<'a, Message> {
+/// Like [`modal_layer`], but anchored near the top — where a command bar belongs.
+pub fn modal_top_layer(dialog: Element<'_, Message>) -> Element<'_, Message> {
     let backdrop = container(opaque(dialog))
         .width(iced::Fill)
         .height(iced::Fill)
         .align_x(iced::Center)
         .padding(iced::Padding::ZERO.top(60))
         .style(backdrop_style);
-    stack![base, opaque(mouse_area(backdrop))].into()
+    opaque(mouse_area(backdrop))
 }
 
 fn backdrop_style(_: &iced::Theme) -> container::Style {
