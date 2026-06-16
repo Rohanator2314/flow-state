@@ -26,6 +26,10 @@ pub struct Config {
     pub preview_split_ratio: f32,
     /// Dim the paragraphs outside the one being written (the focus effect).
     pub focus_dimming: bool,
+    /// Keep the active paragraph vertically centered (typewriter scrolling).
+    pub typewriter_scroll: bool,
+    /// Give the active paragraph a soft glow.
+    pub paragraph_glow: bool,
     /// Editor font family name; empty = the built-in sans-serif default.
     pub editor_font: String,
 }
@@ -37,6 +41,8 @@ impl Default for Config {
             latex_compiler: "pdflatex".to_string(),
             preview_split_ratio: 0.5,
             focus_dimming: true,
+            typewriter_scroll: false,
+            paragraph_glow: false,
             editor_font: String::new(),
         }
     }

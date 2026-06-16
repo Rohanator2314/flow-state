@@ -31,10 +31,43 @@ use iced::{Background, Border, Color, Element, Fill, Rectangle, Task};
 
 use crate::app::{App, DocId, Message};
 use crate::core::text::{self, Pos};
+use crate::core::center;
 use crate::view::decoration;
 
 /// Thickness of the accent emphasis underline, in pixels.
 const UNDERLINE_THICKNESS: f32 = 1.5;
+
+/// Most visual lines a single centering animation frame scrolls (the eased
+/// step is capped here so big jumps still take a few frames).
+const MAX_CENTER_STEP: i32 = 4;
+
+/// One eased scroll step (in visual lines) toward vertically centering the
+/// active paragraph `para` (inclusive logical line range) in the viewport.
+/// Reads the editor's current layout from its cosmic buffer. Returns `None`
+/// when the paragraph is not laid out (off-screen) or already centered — both
+/// signals for the caller to stop animating.
+pub fn center_step(buffer: &cosmic_text::Buffer, para: (usize, usize)) -> Option<i32> {
+    let vh = buffer.size().1?;
+    let line_height = buffer.metrics().line_height;
+    let (p0, p1) = para;
+
+    // Pixel extent of the paragraph's visible visual lines (viewport-local).
+    let mut top = f32::INFINITY;
+    let mut bottom = f32::NEG_INFINITY;
+    for run in buffer.layout_runs() {
+        if run.line_i >= p0 && run.line_i <= p1 {
+            top = top.min(run.line_top);
+            bottom = bottom.max(run.line_top + run.line_height);
+        }
+    }
+    if !top.is_finite() {
+        return None; // paragraph not currently laid out
+    }
+    let mid = (top + bottom) / 2.0;
+    let delta = center::delta_lines(mid - vh / 2.0, line_height);
+    let step = center::ease_step(delta, MAX_CENTER_STEP);
+    (step != 0).then_some(step)
+}
 
 fn editor_id(id: DocId) -> iced::widget::Id {
     iced::widget::Id::from(format!("editor-{id}"))

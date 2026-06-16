@@ -6,6 +6,7 @@
 //! The one iced type allowed through is `iced::Color` (in [`theme`]), since
 //! colors are what theme resolution produces.
 
+pub mod center;
 pub mod config;
 pub mod fonts;
 pub mod latex;

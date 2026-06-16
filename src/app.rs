@@ -48,6 +48,8 @@ pub enum Message {
     /// Held-modifier set changed — drives the sidebar keybind hints, the
     /// accent emphasis, and PDF wheel zoom.
     ModifiersChanged(iced::keyboard::Modifiers),
+    /// One animation frame of typewriter centering.
+    CenterTick,
     // preview
     Compiled(DocId, Result<Vec<PdfPage>, String>),
     PdfScroll(iced::mouse::ScrollDelta),
@@ -498,6 +500,12 @@ pub struct App {
     /// the sidebar keybind hints, the editor accent emphasis, and the PDF
     /// wheel's scroll-vs-zoom toggle (CTRL).
     pub modifiers: iced::keyboard::Modifiers,
+    /// Typewriter centering: a per-frame animation is converging the active
+    /// paragraph toward the viewport centre. Gates the `frames` subscription.
+    centering: bool,
+    /// The user scrolled the editor by hand; suspends centering until the next
+    /// edit (per the agreed behavior).
+    user_scrolled: bool,
     pub panes: pane_grid::State<PaneKind>,
     /// The pane that last received a click; gets the highlighted border.
     pub focused: pane_grid::Pane,
@@ -537,6 +545,8 @@ impl App {
             next_id: first_id + 1,
             pdf_zoom: 1.0,
             modifiers: iced::keyboard::Modifiers::default(),
+            centering: false,
+            user_scrolled: false,
             panes,
             focused: first,
             sidebar: Sidebar::new(PathBuf::from(".")),
@@ -611,6 +621,11 @@ impl App {
             // arrive here and drive the list selection.
             subs.push(iced::event::listen_with(on_menu_arrows));
         }
+        // Per-frame ticks only while a centering animation is converging — no
+        // idle repaint when the active paragraph is already centered.
+        if self.config.typewriter_scroll && self.centering {
+            subs.push(iced::window::frames().map(|_| Message::CenterTick));
+        }
         // Always-on 1 s tick: expires status messages and polls the config
         // files for hot-reload.
         subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick));
@@ -623,6 +638,15 @@ impl App {
 
     fn set_status(&mut self, msg: impl Into<String>) {
         self.status = Some((msg.into(), Instant::now()));
+    }
+
+    /// Start (or continue) a typewriter-centering animation after a cursor move
+    /// or edit, unless the user has scrolled by hand. A no-op when typewriter
+    /// scrolling is off; the animation self-stops once centered.
+    fn request_center(&mut self) {
+        if self.config.typewriter_scroll && !self.user_scrolled {
+            self.centering = true;
+        }
     }
 
     /// Ensure a preview pane exists when the focused document is previewable.
@@ -946,6 +970,21 @@ impl App {
                 if let Some(pane) = self.pane_of_doc(id) {
                     self.set_focus(pane);
                 }
+                // A manual wheel scroll suspends centering until the next edit;
+                // apply it directly (it neither edits text nor touches the
+                // phantom/undo history).
+                if matches!(action, text_editor::Action::Scroll { .. }) {
+                    self.user_scrolled = true;
+                    self.centering = false;
+                    if let Some(doc) = self.docs.get_mut(&id) {
+                        doc.content.perform(action);
+                    }
+                    return Task::none();
+                }
+                // Any other edit/move/click resumes centering on the active
+                // paragraph (the animation self-stops once centered).
+                self.user_scrolled = false;
+                self.request_center();
                 let Some(doc) = self.docs.get_mut(&id) else {
                     return Task::none();
                 };
@@ -1022,6 +1061,7 @@ impl App {
                     }
                     None => self.set_status("nothing to undo"),
                 }
+                self.request_center();
                 Task::none()
             }
             Message::Redo => {
@@ -1034,6 +1074,7 @@ impl App {
                     }
                     None => self.set_status("nothing to redo"),
                 }
+                self.request_center();
                 Task::none()
             }
             Message::DeleteSentence => {
@@ -1057,6 +1098,7 @@ impl App {
                     doc.move_to(start);
                     doc.modified = true;
                 }
+                self.request_center();
                 Task::none()
             }
             Message::DeleteWord => {
@@ -1074,6 +1116,7 @@ impl App {
                     doc.content
                         .perform(text_editor::Action::Edit(text_editor::Edit::Backspace));
                 }
+                self.request_center();
                 Task::none()
             }
             Message::PhantomAccept => {
@@ -1087,6 +1130,7 @@ impl App {
                     doc.content
                         .perform(text_editor::Action::Edit(text_editor::Edit::Insert('\t')));
                 }
+                self.request_center();
                 Task::none()
             }
             Message::NextParagraph => {
@@ -1097,6 +1141,7 @@ impl App {
                     doc.move_to((line, 0));
                     doc.history.break_run();
                 }
+                self.request_center();
                 Task::none()
             }
             Message::PrevParagraph => {
@@ -1107,6 +1152,7 @@ impl App {
                     doc.move_to((line, 0));
                     doc.history.break_run();
                 }
+                self.request_center();
                 Task::none()
             }
 
@@ -1128,6 +1174,37 @@ impl App {
             }
             Message::ModifiersChanged(m) => {
                 self.modifiers = m;
+                Task::none()
+            }
+            Message::CenterTick => {
+                if !self.config.typewriter_scroll || self.user_scrolled {
+                    self.centering = false;
+                    return Task::none();
+                }
+                let para = self.active_paragraph();
+                let scroll = |app: &App| {
+                    app.active_doc()
+                        .content
+                        .with_buffer(|b| (b.scroll().line, b.scroll().vertical))
+                };
+                let step = self
+                    .active_doc()
+                    .content
+                    .with_buffer(|buf| view::editor::center_step(buf, para));
+                match step {
+                    Some(lines) => {
+                        let before = scroll(self);
+                        self.active_doc_mut()
+                            .content
+                            .perform(text_editor::Action::Scroll { lines });
+                        // Stop if the scroll clamped (top/bottom of document) —
+                        // otherwise we'd spin requesting frames forever.
+                        if scroll(self) == before {
+                            self.centering = false;
+                        }
+                    }
+                    None => self.centering = false,
+                }
                 Task::none()
             }
             Message::PdfScroll(delta) => {
