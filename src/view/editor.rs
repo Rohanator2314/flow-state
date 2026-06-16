@@ -229,6 +229,9 @@ fn custom_binding(press: &KeyPress) -> Option<Binding<Message>> {
         Key::Character("q") if m.control() => {
             Some(Binding::Custom(Message::CloseRequested))
         }
+        Key::Named(Named::Tab) if m.control() && m.shift() => {
+            Some(Binding::Custom(Message::PrevPane))
+        }
         Key::Named(Named::Tab) if m.control() => Some(Binding::Custom(Message::NextPane)),
         Key::Character("s") if m.control() => Some(Binding::Custom(Message::Save)),
         Key::Character("z") if m.control() && m.shift() => {

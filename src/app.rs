@@ -74,8 +74,9 @@ pub enum Message {
     FilePicked(Option<PathBuf>),
     /// CTRL+W — close the focused pane (confirming if it has unsaved changes).
     CloseActivePane,
-    /// CTRL+TAB — move focus to the next pane.
+    /// CTRL+TAB / CTRL+SHIFT+TAB — move focus to the next / previous pane.
     NextPane,
+    PrevPane,
     // in-pane find (CTRL+F)
     /// CTRL+F: open the find bar, or close it if already open.
     ToggleSearch,
@@ -344,6 +345,10 @@ pub struct Document {
     /// SHIFT/CTRL+BACKSPACE to discard it (whole, or the last word). `None`
     /// when no phantom is active. Stripped from the buffer on save.
     pub phantom: Option<String>,
+    /// The buffer text as last saved or loaded — the baseline `modified` is
+    /// measured against, so reverting edits (or undoing to the saved state)
+    /// clears the unsaved marker. See [`Document::refresh_modified`].
+    saved_text: String,
 }
 
 impl Document {
@@ -358,6 +363,7 @@ impl Document {
             compiling: false,
             compile_error: None,
             phantom: None,
+            saved_text: String::new(),
         }
     }
 
@@ -366,6 +372,7 @@ impl Document {
             Ok(text) => text_editor::Content::with_text(&text),
             Err(_) => text_editor::Content::new(),
         };
+        let saved_text = content.text();
         let mut doc = Self {
             path: Some(path),
             content,
@@ -376,9 +383,15 @@ impl Document {
             compiling: false,
             compile_error: None,
             phantom: None,
+            saved_text,
         };
-        // `with_text` leaves the cursor at the end; start at the top.
-        doc.move_to((0, 0));
+        // `with_text` leaves the cursor — and the viewport — at the end of the
+        // text; jump to the very start so the document opens showing its
+        // beginning. DocumentStart scrolls the view to the top too, which a
+        // bare cursor move would not.
+        doc.content.perform(text_editor::Action::Move(
+            text_editor::Motion::DocumentStart,
+        ));
         doc
     }
 
@@ -504,13 +517,25 @@ impl Document {
         {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let mut text = self.content.text();
-        if !text.ends_with('\n') {
-            text.push('\n');
+        let text = self.content.text();
+        let mut file_text = text.clone();
+        if !file_text.ends_with('\n') {
+            file_text.push('\n');
         }
-        std::fs::write(&path, text).map_err(|e| e.to_string())?;
+        std::fs::write(&path, file_text).map_err(|e| e.to_string())?;
+        // Baseline is the buffer text (without the newline we add only on disk),
+        // so a freshly-saved document reads as unmodified.
+        self.saved_text = text;
         self.modified = false;
         Ok(path)
+    }
+
+    /// Recompute the unsaved-changes flag by comparing the buffer to the last
+    /// saved/loaded text — so making an edit and then reverting it (by hand or
+    /// via undo back to the saved state) clears the marker. A pending phantom
+    /// always counts as modified: it is a deletion the next save will commit.
+    fn refresh_modified(&mut self) {
+        self.modified = self.phantom.is_some() || self.content.text() != self.saved_text;
     }
 }
 
@@ -967,6 +992,23 @@ impl App {
         }
     }
 
+    /// Move focus to the next (`dir = 1`) or previous (`dir = -1`) pane,
+    /// wrapping around. Focusing an editor pane hands it the keyboard so the
+    /// cursor is live without a click; the preview pane just takes the border.
+    fn cycle_pane(&mut self, dir: isize) -> Task<Message> {
+        let order: Vec<pane_grid::Pane> = self.panes.iter().map(|(p, _)| *p).collect();
+        let Some(i) = order.iter().position(|p| *p == self.focused) else {
+            return Task::none();
+        };
+        let n = order.len() as isize;
+        let next = order[(i as isize + dir).rem_euclid(n) as usize];
+        self.set_focus(next);
+        if matches!(self.panes.get(next), Some(PaneKind::Editor(_))) {
+            return view::editor::focus(self.active);
+        }
+        Task::none()
+    }
+
     /// The active document's paragraph range (inclusive lines), for dimming.
     pub fn active_paragraph(&self) -> (usize, usize) {
         let content = &self.active_doc().content;
@@ -1100,6 +1142,28 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        // After any message that can change the buffer, re-derive the active
+        // document's unsaved marker from a comparison with the saved text, so
+        // reverting edits clears it (see `Document::refresh_modified`). Bare
+        // cursor moves / scrolls / clicks don't change text, so they skip the
+        // (whole-buffer) comparison.
+        let recompute = match &message {
+            Message::Edit(_, action) => matches!(action, text_editor::Action::Edit(_)),
+            Message::Undo
+            | Message::Redo
+            | Message::DeleteSentence
+            | Message::DeleteWord
+            | Message::PhantomAccept => true,
+            _ => false,
+        };
+        let task = self.update_inner(message);
+        if recompute {
+            self.active_doc_mut().refresh_modified();
+        }
+        task
+    }
+
+    fn update_inner(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Edit(id, action) => {
                 // An edit/click in a pane makes its document the focused one.
@@ -1648,18 +1712,8 @@ impl App {
                 None => Task::none(),
             },
             Message::CloseActivePane => self.update(Message::ClosePane(self.focused)),
-            Message::NextPane => {
-                let order: Vec<pane_grid::Pane> =
-                    self.panes.iter().map(|(p, _)| *p).collect();
-                if let Some(i) = order.iter().position(|p| *p == self.focused) {
-                    let next = order[(i + 1) % order.len()];
-                    self.set_focus(next);
-                    if matches!(self.panes.get(next), Some(PaneKind::Editor(_))) {
-                        return view::editor::focus(self.active);
-                    }
-                }
-                Task::none()
-            }
+            Message::NextPane => self.cycle_pane(1),
+            Message::PrevPane => self.cycle_pane(-1),
             Message::ToggleSearch => {
                 if self.search.take().is_some() {
                     // Second CTRL+F closes the bar and returns to the editor.

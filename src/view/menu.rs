@@ -181,7 +181,7 @@ fn help_panel(app: &App) -> Element<'_, Message> {
         ("CTRL+O", "open a file (system dialog)"),
         ("CTRL+F", "find in the focused pane"),
         ("CTRL+W", "close the focused pane"),
-        ("CTRL+TAB", "focus the next pane"),
+        ("CTRL+TAB / CTRL+SHIFT+TAB", "focus the next / previous pane"),
         ("CTRL+Q", "quit"),
         ("CTRL+Z", "undo"),
         ("CTRL+SHIFT+Z / CTRL+Y", "redo"),

@@ -46,7 +46,9 @@ writing.
   save. Focusing a plain-text document leaves the preview pane showing a
   hint. `.md`/`.tex` files open the preview at a configurable split ratio.
 - **Status bar**: focused filename + unsaved dot, compile state, transient
-  messages, and the cursor's paragraph / total paragraphs.
+  messages, and the cursor's paragraph / total paragraphs. The unsaved dot
+  tracks the buffer against the last saved/loaded text, so reverting an edit
+  (by hand or by undoing back to the saved state) clears it.
 
 ---
 
@@ -89,7 +91,7 @@ editing (selection, clipboard, mouse) works as expected.
 | CTRL+O | Open a file via the system file picker |
 | CTRL+F | Toggle find in the focused pane (ENTER / ‹ › step matches, ESC or a second CTRL+F closes) |
 | CTRL+W | Close the focused pane (confirming if it has unsaved changes) |
-| CTRL+TAB | Focus the next pane |
+| CTRL+TAB / CTRL+SHIFT+TAB | Focus the next / previous pane |
 | CTRL+Q | Quit (prompts to save if anything is unsaved) |
 | CTRL+Z | Undo (full session history, unlimited depth) |
 | CTRL+SHIFT+Z / CTRL+Y | Redo |
