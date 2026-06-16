@@ -175,8 +175,14 @@ fn split_panel(app: &App) -> Element<'_, Message> {
 
 fn help_panel(app: &App) -> Element<'_, Message> {
     let theme = &app.theme;
-    const BINDS: [(&str, &str); 12] = [
+    const BINDS: [(&str, &str); 18] = [
         ("CTRL+S", "save, then refresh/compile the preview"),
+        ("CTRL+N", "new file"),
+        ("CTRL+O", "open a file (system dialog)"),
+        ("CTRL+F", "find in the focused pane"),
+        ("CTRL+W", "close the focused pane"),
+        ("CTRL+TAB", "focus the next pane"),
+        ("CTRL+Q", "quit"),
         ("CTRL+Z", "undo"),
         ("CTRL+SHIFT+Z / CTRL+Y", "redo"),
         ("CTRL+BACKSPACE", "delete the word before the cursor"),

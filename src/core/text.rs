@@ -158,6 +158,39 @@ pub fn first_word_end(s: &str) -> usize {
     chars.get(i).map(|(b, _)| *b).unwrap_or(s.len())
 }
 
+/// Every non-overlapping, case-insensitive occurrence of `needle` within a
+/// single line, each as a `[start, end)` `(line, byte_col)` span — for the
+/// CTRL+F in-pane search. Matches do not span line breaks (a search query is
+/// effectively per-line). Returns empty for an empty needle.
+pub fn find_all(lines: &[String], needle: &str) -> Vec<(Pos, Pos)> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    // Lowercase the needle to a char sequence (case-insensitive compare).
+    let pat: Vec<char> = needle.chars().flat_map(char::to_lowercase).collect();
+    let mut out = Vec::new();
+    for (li, line) in lines.iter().enumerate() {
+        // Each source char expands to its lowercase chars, all tagged with the
+        // source char's *byte* offset so matches map back to byte columns.
+        let seq: Vec<(usize, char)> = line
+            .char_indices()
+            .flat_map(|(b, ch)| ch.to_lowercase().map(move |lc| (b, lc)))
+            .collect();
+        let mut i = 0;
+        while i + pat.len() <= seq.len() {
+            if (0..pat.len()).all(|k| seq[i + k].1 == pat[k]) {
+                let start = seq[i].0;
+                let end = seq.get(i + pat.len()).map_or(line.len(), |&(b, _)| b);
+                out.push(((li, start), (li, end)));
+                i += pat.len();
+            } else {
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
 /// The text between two positions `[a, b)`, with `\n` rejoining lines. Used to
 /// capture a deleted sentence as a phantom.
 pub fn slice(lines: &[String], a: Pos, b: Pos) -> String {
@@ -229,6 +262,24 @@ mod tests {
         // Leading whitespace is skipped before the word.
         assert_eq!(first_word_end("  a b"), 4); // past "  a " → 'b' at byte 4
         assert_eq!(first_word_end("   "), 3);
+    }
+
+    #[test]
+    fn find_all_is_case_insensitive_and_byte_aligned() {
+        let l = lines("The cat sat on the Cat mat");
+        // "cat" matches at bytes 4 and 19 (the capitalized one too).
+        assert_eq!(find_all(&l, "cat"), vec![((0, 4), (0, 7)), ((0, 19), (0, 22))]);
+        // A match at end of line ends at line length.
+        let m = lines("find me");
+        assert_eq!(find_all(&m, "me"), vec![((0, 5), (0, 7))]);
+        // Empty needle yields nothing.
+        assert_eq!(find_all(&l, ""), Vec::<(Pos, Pos)>::new());
+        // Multibyte: 'é' is 2 bytes, so "world" starts at byte 7.
+        let n = lines("héllo world");
+        assert_eq!(find_all(&n, "world"), vec![((0, 7), (0, 12))]);
+        // Matches span lines independently.
+        let p = lines("one two\ntwo three");
+        assert_eq!(find_all(&p, "two"), vec![((0, 4), (0, 7)), ((1, 0), (1, 3))]);
     }
 
     #[test]

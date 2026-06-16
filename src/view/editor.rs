@@ -215,6 +215,19 @@ fn custom_binding(press: &KeyPress) -> Option<Binding<Message>> {
     }
     let m = press.modifiers;
     match press.key.as_ref() {
+        // Quality-of-life global binds (CTRL): new/open/find/close/quit and
+        // CTRL+TAB to cycle panes. These fire from the focused editor, which is
+        // where the writer almost always is.
+        Key::Character("n") if m.control() => Some(Binding::Custom(Message::NewFile)),
+        Key::Character("o") if m.control() => Some(Binding::Custom(Message::OpenFilePicker)),
+        Key::Character("f") if m.control() => Some(Binding::Custom(Message::OpenSearch)),
+        Key::Character("w") if m.control() => {
+            Some(Binding::Custom(Message::CloseActivePane))
+        }
+        Key::Character("q") if m.control() => {
+            Some(Binding::Custom(Message::CloseRequested))
+        }
+        Key::Named(Named::Tab) if m.control() => Some(Binding::Custom(Message::NextPane)),
         Key::Character("s") if m.control() => Some(Binding::Custom(Message::Save)),
         Key::Character("z") if m.control() && m.shift() => {
             Some(Binding::Custom(Message::Redo))

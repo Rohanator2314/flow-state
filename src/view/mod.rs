@@ -16,12 +16,13 @@ pub mod dialogs;
 pub mod editor;
 pub mod menu;
 pub mod preview;
+pub mod search;
 pub mod sidebar;
 pub mod style;
 pub mod widget;
 
 use iced::border::Radius;
-use iced::widget::{button, center, column, container, pane_grid, row, text};
+use iced::widget::{button, center, column, container, pane_grid, row, stack, text};
 use iced::{Background, Border, Color, Element, Fill, Padding};
 
 use crate::app::{App, Message, PaneKind};
@@ -54,11 +55,24 @@ pub fn view(app: &App) -> Element<'_, Message> {
             ..container::Style::default()
         });
 
-    let base: Element<'_, Message> = column![
+    let mut base: Element<'_, Message> = column![
         row![sidebar::view(app), shell].height(Fill),
         status_bar(app)
     ]
     .into();
+
+    // The find bar is a non-modal overlay (no backdrop) so the matched text
+    // stays visible behind it; clicks outside the bar fall through to the
+    // editor. Stacked under the modal dialogs below so a dialog still wins.
+    if app.search.is_some() {
+        let anchored = container(search::bar(app))
+            .width(Fill)
+            .height(Fill)
+            .align_x(iced::Right)
+            .align_y(iced::Top)
+            .padding(Padding::new(10.0));
+        base = stack![base, anchored].into();
+    }
 
     if let Some(pending) = &app.confirm {
         return dialogs::modal(base, dialogs::confirm(app, pending));
@@ -112,8 +126,11 @@ fn title_bar<'a>(
     let title_color = if is_focused { theme.text } else { theme.text_inactive };
     let dim = theme.text_inactive;
 
+    // Geometric-shape glyphs (Geometric Shapes block) render in virtually any
+    // font, unlike the window-control emoji they replace: "□" = maximize,
+    // "▣" (nested square) = restore.
     let mut controls = row![control_button(
-        if maximized { "🗗" } else { "🗖" },
+        if maximized { "▣" } else { "□" },
         Message::ToggleMaximize(pane),
         dim,
         theme,

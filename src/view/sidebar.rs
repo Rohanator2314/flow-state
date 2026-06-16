@@ -147,7 +147,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_else(|| app.sidebar.root.display().to_string());
     let header = column![
-        text("📁 Current directory:")
+        text("Current directory:")
             .size(11)
             .color(theme.text_inactive),
         text(dir_name).size(14).color(theme.text),

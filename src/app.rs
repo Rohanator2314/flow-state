@@ -66,6 +66,22 @@ pub enum Message {
     OpenFile(PathBuf),
     NewFileInput(String),
     CreateFile,
+    // quality-of-life keybinds
+    /// CTRL+N — open a fresh untitled scratch pane.
+    NewFile,
+    /// CTRL+O — pick a file with the system dialog, then open it.
+    OpenFilePicker,
+    FilePicked(Option<PathBuf>),
+    /// CTRL+W — close the focused pane (confirming if it has unsaved changes).
+    CloseActivePane,
+    /// CTRL+TAB — move focus to the next pane.
+    NextPane,
+    // in-pane find (CTRL+F)
+    OpenSearch,
+    SearchInput(String),
+    SearchNext,
+    SearchPrev,
+    CloseSearch,
     // command bar (the ESC menu)
     EscPressed,
     CommandInput(String),
@@ -104,6 +120,18 @@ pub enum Menu {
 pub struct Picker {
     pub input: String,
     pub selected: usize,
+}
+
+/// The CTRL+F find bar's state: the query, every match in the focused
+/// document (as `[start, end)` position spans), and which one is current.
+#[derive(Default)]
+pub struct Search {
+    pub query: String,
+    pub matches: Vec<(text::Pos, text::Pos)>,
+    pub current: Option<usize>,
+    /// The cursor position when the bar opened; incremental matching anchors to
+    /// it (so typing more letters doesn't walk the selection forward).
+    origin: text::Pos,
 }
 
 /// Root command-bar entries.
@@ -517,6 +545,8 @@ pub struct App {
     pub focused: pane_grid::Pane,
     pub sidebar: Sidebar,
     pub confirm: Option<PendingAction>,
+    /// The CTRL+F find bar, when open.
+    pub search: Option<Search>,
     /// The escape menu (command bar), when open.
     pub menu: Option<Menu>,
     /// The editor/preview split, for live ratio changes from the menu.
@@ -557,6 +587,7 @@ impl App {
             focused: first,
             sidebar: Sidebar::new(PathBuf::from(".")),
             confirm: None,
+            search: None,
             menu: None,
             preview_split: None,
             status: None,
@@ -653,6 +684,59 @@ impl App {
         if self.config.typewriter_scroll && !self.user_scrolled {
             self.centering = true;
         }
+    }
+
+    /// Re-run the find for `query` over the focused document and select the
+    /// first match at or after the cursor (so CTRL+F finds forward). A no-op
+    /// when no find bar is open.
+    fn run_search(&mut self, query: String) {
+        let lines = self.active_doc().lines();
+        let origin = self.search.as_ref().map_or((0, 0), |s| s.origin);
+        let matches = text::find_all(&lines, &query);
+        let current = (!matches.is_empty()).then(|| {
+            matches
+                .iter()
+                .position(|&(start, _)| start >= origin)
+                .unwrap_or(0)
+        });
+        if let Some(search) = self.search.as_mut() {
+            search.query = query;
+            search.matches = matches;
+            search.current = current;
+        }
+        self.select_match();
+    }
+
+    /// Move the find selection by `dir` (+1 next, −1 previous), wrapping.
+    fn step_match(&mut self, dir: isize) {
+        if let Some(search) = self.search.as_mut()
+            && !search.matches.is_empty()
+        {
+            let n = search.matches.len() as isize;
+            let cur = search.current.unwrap_or(0) as isize;
+            search.current = Some((cur + dir).rem_euclid(n) as usize);
+        }
+        self.select_match();
+    }
+
+    /// Select the current find match in the focused document (caret at its end,
+    /// the match itself highlighted) and re-center on it.
+    fn select_match(&mut self) {
+        let span = self
+            .search
+            .as_ref()
+            .and_then(|s| s.current.and_then(|i| s.matches.get(i).copied()));
+        let Some((start, end)) = span else {
+            return;
+        };
+        self.active_doc_mut().content.move_to(text_editor::Cursor {
+            position: text_editor::Position { line: end.0, column: end.1 },
+            selection: Some(text_editor::Position {
+                line: start.0,
+                column: start.1,
+            }),
+        });
+        self.request_center();
     }
 
     /// Ensure a preview pane exists when the focused document is previewable.
@@ -1301,11 +1385,15 @@ impl App {
             }
 
             Message::EscPressed => {
-                // ESC peels UI layers: dialog, error, sub-bar, bar, then opens.
+                // ESC peels UI layers: dialog, error, find bar, sub-bar, bar,
+                // then opens the command bar.
                 if self.confirm.is_some() {
                     self.confirm = None;
                 } else if self.active_doc().compile_error.is_some() {
                     self.active_doc_mut().compile_error = None;
+                } else if self.search.is_some() {
+                    self.search = None;
+                    return view::editor::focus(self.active);
                 } else {
                     match self.menu.take() {
                         // Root bar: close. Sub-views: back to the root bar.
@@ -1509,6 +1597,68 @@ impl App {
                     self.set_status(format!("created {name} — CTRL+S to save"));
                     view::editor::focus(self.active)
                 }
+            }
+
+            Message::NewFile => {
+                // A fresh scratch buffer in its own pane (CTRL+N).
+                let id = self.next_id;
+                self.next_id += 1;
+                self.docs.insert(id, Document::untitled());
+                self.spawn_editor(id);
+                self.set_status("new file");
+                view::editor::focus(self.active)
+            }
+            Message::OpenFilePicker => Task::perform(
+                async {
+                    rfd::AsyncFileDialog::new()
+                        .pick_file()
+                        .await
+                        .map(|h| h.path().to_path_buf())
+                },
+                Message::FilePicked,
+            ),
+            Message::FilePicked(picked) => match picked {
+                Some(path) => self.open_file(path),
+                None => Task::none(),
+            },
+            Message::CloseActivePane => self.update(Message::ClosePane(self.focused)),
+            Message::NextPane => {
+                let order: Vec<pane_grid::Pane> =
+                    self.panes.iter().map(|(p, _)| *p).collect();
+                if let Some(i) = order.iter().position(|p| *p == self.focused) {
+                    let next = order[(i + 1) % order.len()];
+                    self.set_focus(next);
+                    if matches!(self.panes.get(next), Some(PaneKind::Editor(_))) {
+                        return view::editor::focus(self.active);
+                    }
+                }
+                Task::none()
+            }
+            Message::OpenSearch => {
+                if self.search.is_none() {
+                    let origin = self.active_doc().cursor_pos();
+                    self.search = Some(Search {
+                        origin,
+                        ..Search::default()
+                    });
+                }
+                view::search::focus_input()
+            }
+            Message::SearchInput(query) => {
+                self.run_search(query);
+                Task::none()
+            }
+            Message::SearchNext => {
+                self.step_match(1);
+                Task::none()
+            }
+            Message::SearchPrev => {
+                self.step_match(-1);
+                Task::none()
+            }
+            Message::CloseSearch => {
+                self.search = None;
+                view::editor::focus(self.active)
             }
 
             Message::CloseRequested => {

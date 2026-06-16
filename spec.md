@@ -85,11 +85,17 @@ editing (selection, clipboard, mouse) works as expected.
 | CTRL+BACKSPACE | Delete the word before the cursor (or trim the last word off an active phantom) |
 | SHIFT+BACKSPACE | "Delete" the current sentence into a phantom (press again to discard it) |
 | TAB | Accept the active phantom (otherwise inserts a tab) |
+| CTRL+N | New (untitled) file in its own pane |
+| CTRL+O | Open a file via the system file picker |
+| CTRL+F | Find text in the focused pane (ENTER / ‹ › step matches, ESC closes) |
+| CTRL+W | Close the focused pane (confirming if it has unsaved changes) |
+| CTRL+TAB | Focus the next pane |
+| CTRL+Q | Quit (prompts to save if anything is unsaved) |
 | CTRL+Z | Undo (full session history, unlimited depth) |
 | CTRL+SHIFT+Z / CTRL+Y | Redo |
 | CTRL+S | Save, then compile/refresh the preview |
 | CTRL+C/X/V | Clipboard (widget defaults) |
-| ESC | Open the command bar / back out one level; also dismisses dialogs |
+| ESC | Open the command bar / back out one level; also dismisses dialogs and the find bar |
 
 ### Live keybind hints & emphasis
 
@@ -264,5 +270,4 @@ external edits are picked up (within ~1 s) and applied without a restart.
 ## Open Questions
 
 1. **Sentence boundary detection** for SHIFT+BACKSPACE: handle edge cases
-   like `e.g.`, `Dr.`, abbreviations. (v1 treats every `.`/`?`/`!` as a
-   boundary; a terminator immediately before the cursor is skipped.)
+   like `e.g.`, `Dr.`, abbreviations. (v1 treats every `.`/`?`/`!` as a boundary; a terminator immediately before the cursor is skipped.

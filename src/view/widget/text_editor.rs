@@ -1045,49 +1045,55 @@ where
             );
         }
 
-        if let Some(focus) = state.focus.as_ref() {
-            match internal.editor.selection() {
-                Selection::Caret(position) if focus.is_cursor_visible() => {
-                    let cursor =
-                        Rectangle::new(
-                            position + translation,
-                            Size::new(
-                                1.0,
-                                self.line_height
-                                    .to_absolute(self.text_size.unwrap_or_else(
-                                        || renderer.default_size(),
-                                    ))
-                                    .into(),
-                            ),
-                        );
+        match internal.editor.selection() {
+            // The caret only draws while focused (and unblinked) — a blinking
+            // caret on an unfocused pane would be misleading.
+            Selection::Caret(position)
+                if state
+                    .focus
+                    .as_ref()
+                    .is_some_and(Focus::is_cursor_visible) =>
+            {
+                let cursor =
+                    Rectangle::new(
+                        position + translation,
+                        Size::new(
+                            1.0,
+                            self.line_height
+                                .to_absolute(self.text_size.unwrap_or_else(
+                                    || renderer.default_size(),
+                                ))
+                                .into(),
+                        ),
+                    );
 
-                    if let Some(clipped_cursor) =
-                        text_bounds.intersection(&cursor)
-                    {
-                        renderer.fill_quad(
-                            renderer::Quad {
-                                bounds: clipped_cursor,
-                                ..renderer::Quad::default()
-                            },
-                            style.value,
-                        );
-                    }
+                if let Some(clipped_cursor) = text_bounds.intersection(&cursor)
+                {
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: clipped_cursor,
+                            ..renderer::Quad::default()
+                        },
+                        style.value,
+                    );
                 }
-                Selection::Range(ranges) => {
-                    for range in ranges.into_iter().filter_map(|range| {
-                        text_bounds.intersection(&(range + translation))
-                    }) {
-                        renderer.fill_quad(
-                            renderer::Quad {
-                                bounds: range,
-                                ..renderer::Quad::default()
-                            },
-                            style.selection,
-                        );
-                    }
-                }
-                Selection::Caret(_) => {}
             }
+            // flow-state: the selection highlight draws regardless of focus, so
+            // a CTRL+F match stays visible while the find input holds focus.
+            Selection::Range(ranges) => {
+                for range in ranges.into_iter().filter_map(|range| {
+                    text_bounds.intersection(&(range + translation))
+                }) {
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: range,
+                            ..renderer::Quad::default()
+                        },
+                        style.selection,
+                    );
+                }
+            }
+            Selection::Caret(_) => {}
         }
 
         // flow-state: character underlines sit over the glyphs.
