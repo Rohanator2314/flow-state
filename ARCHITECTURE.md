@@ -24,17 +24,18 @@ off-thread via `Task::perform` and returns as a message.
                    │ uses                       │ rendered by
                    ▼                            ▼
             core/ (UI-free, tested)       view/ (stateless)
-            ├ text.rs    paragraphs,      ├ mod.rs      layout, status bar
-            │            sentence scan    ├ sidebar.rs  directory tree
-            ├ undo.rs    snapshot history ├ editor.rs   text_editor, keymap,
-            ├ latex.rs   pdflatex→pdftoppm│             dim/emphasis/phantom hl
-            ├ theme.rs   halloy TOML→Color├ preview.rs  markdown / PDF pages
-            ├ fonts.rs   system font list ├ dialogs.rs  modals
-            └ config.rs  config.toml      ├ menu.rs     ESC command bar
-                                          │             (pickers, slider,
-                                          │             keybind help)
-                                          └ style.rs    halloy-derived widget
-                                                        styles (GPL)
+            ├ text.rs    paragraphs,      ├ mod.rs       layout, status bar
+            │            sentence scan    ├ sidebar.rs   directory tree
+            ├ undo.rs    snapshot history ├ editor.rs    builds the editor
+            ├ latex.rs   pdflatex→pdftoppm│              widget; keymap, dim hl,
+            ├ center.rs  centering math   │              decorations, centering
+            ├ theme.rs   halloy TOML→Color├ decoration.rs span→rect geometry
+            ├ fonts.rs   system font list ├ widget/      forked text_editor
+            └ config.rs  config.toml      │              (vendored, extended)
+                                          ├ preview.rs   markdown / PDF pages
+                                          ├ dialogs.rs   modals
+                                          ├ menu.rs      ESC command bar
+                                          └ style.rs     halloy widget styles
 ```
 
 ## Design rules
@@ -89,18 +90,34 @@ For a new behavior: add a `Message` variant, bind it
 or edits can often be expressed without a message at all via
 `Binding::Sequence` of built-ins (see CTRL+BACKSPACE).
 
-**Highlight a span in the editor (color only).** The dimming highlighter
-(`view/editor.rs::DimHighlighter`) is the one hook for recoloring editor text.
-Its `DimSettings` carry the active-paragraph line range plus optional
-`emphasis` (accent) and `ghost` (dim) spans as `(start, end)` `(line, col)`
-positions; `highlight_line` splits each line at the span boundaries and colors
-each segment (emphasis over ghost over the base dim/active color). The view
-recomputes the settings every frame from cursor + `App::modifiers` + phantom,
-and the widget re-runs the highlighter whenever the settings change. Note the
-hard limit: iced's highlighter `Format` exposes only `color` and `font` — **no
-underline or background** — so "emphasis" is a color change, not an underline.
-True underline (and the paragraph glow/centering) is what the planned custom
-editor widget is for.
+**Recolor editor text (dimming, ghost).** The `DimHighlighter`
+(`view/editor.rs`) rides iced's highlighter hook — the only way to change glyph
+*color*. Its `DimSettings` carry the active-paragraph line range and an optional
+`ghost` span (the phantom, dimmed inside the active paragraph); `highlight_line`
+splits each line at the ghost boundary. The view recomputes the settings each
+frame; the widget re-runs the highlighter when they change. The `Format` is
+color/font only — no underline/background.
+
+**Underline / glow / background a span (decoration pass).** Anything beyond
+color is a quad in the forked widget's decoration pass. `view/editor.rs` turns a
+`(line, col)` byte span into editor-local rectangles via
+`decoration::span_rects` (over the cosmic buffer read through
+`Content::with_buffer`), wraps each in a `DecorationQuad { bounds, color, radius,
+behind }`, and hands the `Vec` to `TextEditor::decorations(...)`. The widget's
+`draw` translates each quad into widget space and fills it — `behind` ones
+(glow) before the text, the rest (underlines) after. The CTRL/SHIFT accent
+underline and the active-paragraph glow are both built this way.
+
+**Typewriter centering.** Driven entirely from `App::update` (no widget state):
+`request_center()` sets `App::centering` after any cursor move/edit (when
+`typewriter_scroll` is on and the user hasn't hand-scrolled); that gates a
+`window::frames()` subscription. Each `Message::CenterTick`,
+`view::editor::center_step` reads the active paragraph's pixel midpoint from the
+cosmic buffer (`Content::with_buffer`), and `core::center` converts the gap to an
+eased whole-line `Action::Scroll`. It self-stops when centered or when the scroll
+clamps (a no-progress guard). A manual wheel scroll arrives as
+`Action::Scroll` in `Message::Edit`, which sets `user_scrolled` to suspend
+centering until the next edit.
 
 **React to held modifiers** (keybind hints, accent emphasis, PDF zoom). The
 held-modifier set is tracked by the always-on `on_modifiers` subscription into
@@ -213,12 +230,16 @@ pane closure, and create/close it in `App::sync_preview_pane` (or a sibling).
 
 ## Known limitations / future work
 
-- A custom editor widget is planned for the effects the stock `text_editor`
-  cannot do: typewriter vertical centering of the active paragraph (it exposes
-  no scroll control; `Action::Scroll` is relative with no readback), a
-  per-character **underline** (the highlighter `Format` has color/font only),
-  and an active-paragraph **glow**. Until then, paragraph focus is the dim
-  highlighter and "emphasis" is an accent color rather than an underline.
+- The editor is a **fork of iced's `text_editor`** (`view/widget/text_editor.rs`,
+  vendored MIT) because the stock widget can't do three things flow-state wants:
+  a per-character **underline** (its highlighter `Format` is color/font only), a
+  paragraph **glow**, and **scroll control** for typewriter centering. The fork
+  keeps iced's fast integrated text rendering (`fill_editor`, cosmic-text cached
+  layout — no per-frame reshaping); it only *adds* a decoration quad pass and a
+  read-only `Content::with_buffer` accessor. Consequence: scroll is line-granular
+  (`Action::Scroll { lines }`), so centering lands within ~half a line of exact
+  center. A pixel-perfect alternative would mean hand-rendering glyphs (giving up
+  the fast path) — deliberately not done.
 - Themes load a subset of halloy's schema (the writing-app surfaces); halloy's
   light/dark dynamic pairs and multi-theme random selection are not supported.
 - Sentence detection treats every `.?!` as a boundary (`e.g.` ends a

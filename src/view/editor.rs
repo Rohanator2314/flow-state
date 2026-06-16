@@ -37,6 +37,12 @@ use crate::view::decoration;
 /// Thickness of the accent emphasis underline, in pixels.
 const UNDERLINE_THICKNESS: f32 = 1.5;
 
+/// Padding (and corner radius) of the active-paragraph glow, in pixels.
+const GLOW_PADDING: f32 = 8.0;
+
+/// Alpha of the (static) active-paragraph glow over the accent color.
+const GLOW_ALPHA: f32 = 0.10;
+
 /// Most visual lines a single centering animation frame scrolls (the eased
 /// step is capped here so big jumps still take a few frames).
 const MAX_CENTER_STEP: i32 = 4;
@@ -131,15 +137,27 @@ pub fn view(app: &App, id: DocId) -> Element<'_, Message> {
         ghost,
     };
 
-    // The emphasis underline is a decoration pass (the color highlighter can
-    // recolor text but not underline it). Geometry comes from the editor's
-    // current layout via the cosmic buffer.
-    let decorations = emphasis
-        .map(|(start, end)| {
-            doc.content
-                .with_buffer(|buffer| underline_quads(buffer, start, end, theme.accent))
+    // Decorations are a quad pass (the color highlighter can recolor text but
+    // not underline or glow it). Geometry comes from the editor's current
+    // layout via the cosmic buffer.
+    //   - the emphasis underline (CTRL/SHIFT), over the glyphs;
+    //   - the active-paragraph glow (opt-in), behind them.
+    let glow = (is_active && app.config.paragraph_glow).then(|| app.active_paragraph());
+    let decorations = if emphasis.is_some() || glow.is_some() {
+        doc.content.with_buffer(|buffer| {
+            let mut quads = Vec::new();
+            if let Some((start, end)) = emphasis {
+                quads.extend(underline_quads(buffer, start, end, theme.accent));
+            }
+            if let Some(para) = glow {
+                let color = Color { a: GLOW_ALPHA, ..theme.accent };
+                quads.extend(glow_quad(buffer, para, color));
+            }
+            quads
         })
-        .unwrap_or_default();
+    } else {
+        Vec::new()
+    };
 
     TextEditor::new(&doc.content)
         .id(editor_id(id))
@@ -229,9 +247,43 @@ fn underline_quads(
                 height: UNDERLINE_THICKNESS,
             },
             color,
+            radius: 0.0,
             behind: false,
         })
         .collect()
+}
+
+/// A soft (static, low-alpha, rounded) glow behind the active paragraph's
+/// visible visual lines. `None` when the paragraph is not laid out.
+fn glow_quad(buffer: &cosmic_text::Buffer, para: (usize, usize), color: Color) -> Option<DecorationQuad> {
+    let (p0, p1) = para;
+    let (mut top, mut bottom, mut left, mut right) =
+        (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+    for run in buffer.layout_runs() {
+        if run.line_i >= p0 && run.line_i <= p1 {
+            top = top.min(run.line_top);
+            bottom = bottom.max(run.line_top + run.line_height);
+            for g in run.glyphs {
+                left = left.min(g.x);
+                right = right.max(g.x + g.w);
+            }
+        }
+    }
+    if !top.is_finite() || !left.is_finite() {
+        return None;
+    }
+    let pad = GLOW_PADDING;
+    Some(DecorationQuad {
+        bounds: Rectangle {
+            x: left - pad,
+            y: top - pad,
+            width: (right - left) + 2.0 * pad,
+            height: (bottom - top) + 2.0 * pad,
+        },
+        color,
+        radius: pad,
+        behind: true,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]

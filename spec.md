@@ -63,10 +63,17 @@ editing (selection, clipboard, mouse) works as expected.
 ### Focus Effect
 - The **active paragraph** (the one containing the cursor) renders in the
   theme's full text color; all other paragraphs render dimmed
-  (`ui.text.inactive`).
-- *Future work*: vertically centering the active paragraph (typewriter
-  scrolling). The stock iced `text_editor` does not expose scroll control;
-  this needs a custom editor widget.
+  (`text.secondary`).
+- **Typewriter scrolling** (optional, `typewriter_scroll`): the active
+  paragraph's vertical midpoint is kept centered in the viewport, scrolling
+  smoothly to re-center when the cursor moves to a new paragraph. A manual
+  wheel scroll suspends it until the next edit. (Scroll lands on the nearest
+  visual line — see the note in Tech Stack on the custom editor widget.)
+- **Paragraph glow** (optional, `paragraph_glow`): a soft accent glow behind
+  the active paragraph.
+- These three effects (dim, centering, glow) plus the accent **underline** of
+  the CTRL/SHIFT delete target are why flow-state uses a custom editor widget
+  (a fork of iced's `text_editor`); see Tech Stack.
 
 ### Keybindings
 
@@ -136,6 +143,8 @@ Each root command leads to its setting:
   open split live, persists on release.
 - **focus dimming** — toggles the dimming effect immediately and closes the
   bar.
+- **typewriter scroll** — toggles centering the active paragraph.
+- **paragraph glow** — toggles the active-paragraph glow.
 - **help** — the keybinding reference above. Typing `?` in the root bar
   jumps straight to it.
 
@@ -196,6 +205,8 @@ theme = "catppuccin_mocha"
 latex_compiler = "pdflatex"   # or "xelatex"
 preview_split_ratio = 0.5     # initial editor share of the pane area
 focus_dimming = true          # the dimmed-paragraphs focus effect
+typewriter_scroll = false     # keep the active paragraph vertically centered
+paragraph_glow = false        # soft glow behind the active paragraph
 editor_font = "JetBrains Mono"  # installed font family; empty = default sans
 ```
 
@@ -226,7 +237,8 @@ external edits are picked up (within ~1 s) and applied without a restart.
 | Concern | Choice |
 |---|---|
 | Language | Rust |
-| GUI framework | iced 0.14 (`pane_grid`, `text_editor`, `markdown`, `image` widgets) |
+| GUI framework | iced 0.14 (`pane_grid`, `markdown`, `image` widgets) |
+| Editor widget | a fork of iced's `text_editor` (vendored, MIT), extended with a character-underline / glow decoration pass and scroll control for centering. It keeps iced's fast integrated text rendering, so scroll is line-granular: centering lands within ~half a line of exact center — imperceptible on a paragraph change. |
 | LaTeX compilation | System `pdflatex` / `xelatex` (subprocess) |
 | PDF rasterization | System `pdftoppm` (poppler-utils, subprocess) |
 | Markdown rendering | iced's built-in `markdown` widget |
@@ -237,8 +249,6 @@ external edits are picked up (within ~1 s) and applied without a restart.
 
 ## Out of Scope (v1)
 
-- Typewriter vertical centering of the active paragraph (needs a custom
-  editor widget; see Focus Effect)
 - Modal editing
 - LSP / autocomplete
 - Tabbed editing (files open as panes, not tabs)

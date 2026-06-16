@@ -114,16 +114,20 @@ pub enum Command {
     Compiler,
     Split,
     Dimming,
+    Typewriter,
+    Glow,
     Help,
 }
 
 impl Command {
-    const ALL: [Command; 6] = [
+    const ALL: [Command; 8] = [
         Command::Theme,
         Command::Font,
         Command::Compiler,
         Command::Split,
         Command::Dimming,
+        Command::Typewriter,
+        Command::Glow,
         Command::Help,
     ];
 }
@@ -250,6 +254,8 @@ impl std::fmt::Display for Command {
             Command::Compiler => "latex engine — choose the compiler",
             Command::Split => "split width — editor/preview ratio",
             Command::Dimming => "focus dimming — toggle paragraph dimming",
+            Command::Typewriter => "typewriter scroll — center the active paragraph",
+            Command::Glow => "paragraph glow — glow the active paragraph",
             Command::Help => "help — keybindings (?)",
         })
     }
@@ -708,6 +714,29 @@ impl App {
                     "focus dimming on"
                 } else {
                     "focus dimming off"
+                });
+                view::editor::focus(self.active)
+            }
+            Command::Typewriter => {
+                self.config.typewriter_scroll = !self.config.typewriter_scroll;
+                self.save_config();
+                self.menu = None;
+                self.set_status(if self.config.typewriter_scroll {
+                    "typewriter scroll on"
+                } else {
+                    "typewriter scroll off"
+                });
+                self.request_center();
+                view::editor::focus(self.active)
+            }
+            Command::Glow => {
+                self.config.paragraph_glow = !self.config.paragraph_glow;
+                self.save_config();
+                self.menu = None;
+                self.set_status(if self.config.paragraph_glow {
+                    "paragraph glow on"
+                } else {
+                    "paragraph glow off"
                 });
                 view::editor::focus(self.active)
             }

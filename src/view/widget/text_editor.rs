@@ -127,6 +127,8 @@ pub struct TextEditor<
 pub struct DecorationQuad {
     pub bounds: Rectangle,
     pub color: Color,
+    /// Corner radius (0 for underlines; rounded for the paragraph glow).
+    pub radius: f32,
     /// Painted behind the glyphs (backgrounds, glow) when true; over them
     /// (underlines) when false.
     pub behind: bool,
@@ -1157,6 +1159,10 @@ fn draw_decorations<Renderer: text::Renderer>(
             renderer.fill_quad(
                 renderer::Quad {
                     bounds,
+                    border: Border {
+                        radius: deco.radius.into(),
+                        ..Border::default()
+                    },
                     ..renderer::Quad::default()
                 },
                 deco.color,

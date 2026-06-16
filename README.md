@@ -73,6 +73,10 @@ setting:
 - **latex engine** — pdflatex or xelatex.
 - **split width** — a slider for the editor/preview ratio (applies live).
 - **focus dimming** — toggles the paragraph-dimming effect.
+- **typewriter scroll** — keeps the active paragraph vertically centered
+  (scrolls to re-center on paragraph change; a manual scroll pauses it until
+  you type again).
+- **paragraph glow** — a soft glow behind the active paragraph.
 - **help** — the keybinding reference; typing `?` in the bar jumps straight
   there.
 
@@ -89,6 +93,8 @@ theme = "catppuccin_mocha"    # name of a file in ~/.config/flow-state/themes/
 latex_compiler = "pdflatex"   # or "xelatex"
 preview_split_ratio = 0.5     # initial editor share of the pane area
 focus_dimming = true          # dim paragraphs outside the active one
+typewriter_scroll = false     # keep the active paragraph vertically centered
+paragraph_glow = false        # soft glow behind the active paragraph
 editor_font = "JetBrains Mono"  # installed font family; empty = default sans
 ```
 
