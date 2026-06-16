@@ -411,22 +411,22 @@ impl Document {
         }
     }
 
-    /// Trim the last word off an active phantom (CTRL+BACKSPACE), removing it
-    /// from the buffer and shrinking the ghost.
+    /// Trim the first word off an active phantom (CTRL+BACKSPACE) — the word
+    /// closest to the cursor, since the ghost sits just after it. Removes that
+    /// word (and its trailing space) from the buffer and keeps the tail.
     fn phantom_trim_word(&mut self) {
         let Some(rem) = self.phantom.take() else {
             return;
         };
         let cur = self.cursor_pos();
-        let ws = text::last_word_start(&rem);
-        self.delete_span(text::advance(cur, &rem[..ws]), text::advance(cur, &rem));
-        // `delete_span` parked the cursor at the cut; put it back before the
-        // surviving ghost head.
-        self.move_to(cur);
+        let end = text::first_word_end(&rem);
+        // The first word sits flush after the cursor; delete it from the front,
+        // which leaves the cursor exactly where it was, ahead of the tail.
+        self.delete_span(cur, text::advance(cur, &rem[..end]));
         self.modified = true;
-        let head = &rem[..ws];
-        if !head.trim().is_empty() {
-            self.phantom = Some(head.to_string());
+        let tail = &rem[end..];
+        if !tail.trim().is_empty() {
+            self.phantom = Some(tail.to_string());
         }
     }
 

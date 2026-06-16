@@ -139,19 +139,23 @@ pub fn word_before(lines: &[String], cursor: Pos) -> Option<(Pos, Pos)> {
     Some(((line, start), (line, col)))
 }
 
-/// Byte offset where the last word of `s` begins (skipping any trailing
-/// whitespace first), or 0 if `s` has no word. Used to trim the final word
-/// off a phantom with CTRL+BACKSPACE.
-pub fn last_word_start(s: &str) -> usize {
+/// Byte offset just past the first word of `s` and its trailing whitespace —
+/// the span CTRL+BACKSPACE removes from the *front* of a phantom (the word
+/// closest to the cursor, since the ghost sits just after it). Returns
+/// `s.len()` when there is no following word.
+pub fn first_word_end(s: &str) -> usize {
     let chars: Vec<(usize, char)> = s.char_indices().collect();
-    let mut i = chars.len();
-    while i > 0 && chars[i - 1].1.is_whitespace() {
-        i -= 1;
+    let mut i = 0;
+    while i < chars.len() && chars[i].1.is_whitespace() {
+        i += 1; // leading whitespace
     }
-    while i > 0 && !chars[i - 1].1.is_whitespace() {
-        i -= 1;
+    while i < chars.len() && !chars[i].1.is_whitespace() {
+        i += 1; // the word itself
     }
-    chars.get(i).map(|(b, _)| *b).unwrap_or(0)
+    while i < chars.len() && chars[i].1.is_whitespace() {
+        i += 1; // trailing whitespace, so the next word becomes flush
+    }
+    chars.get(i).map(|(b, _)| *b).unwrap_or(s.len())
 }
 
 /// The text between two positions `[a, b)`, with `\n` rejoining lines. Used to
@@ -216,11 +220,15 @@ mod tests {
     }
 
     #[test]
-    fn last_word_start_finds_final_word() {
-        assert_eq!(last_word_start("delete this sentence"), 12);
-        assert_eq!(last_word_start("trailing space "), 9);
-        assert_eq!(last_word_start("word"), 0);
-        assert_eq!(last_word_start("   "), 0);
+    fn first_word_end_spans_first_word_and_trailing_space() {
+        // "delete this sentence" → past "delete " → start of "this" (byte 7).
+        assert_eq!(first_word_end("delete this sentence"), 7);
+        // Single word (no following word) → whole string.
+        assert_eq!(first_word_end("word"), 4);
+        assert_eq!(first_word_end("word "), 5);
+        // Leading whitespace is skipped before the word.
+        assert_eq!(first_word_end("  a b"), 4); // past "  a " → 'b' at byte 4
+        assert_eq!(first_word_end("   "), 3);
     }
 
     #[test]

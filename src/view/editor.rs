@@ -99,20 +99,30 @@ pub fn view(app: &App, id: DocId) -> Element<'_, Message> {
     let cursor: Pos = (pos.line, pos.column);
 
     // Accent emphasis: while CTRL or SHIFT is held in the focused editor,
-    // underline the text its BACKSPACE variant would delete — the previous word
-    // (CTRL) or the current sentence (SHIFT) — so the writer sees the target.
+    // underline the text its BACKSPACE variant would delete, so the writer sees
+    // the target. With a phantom active, the BACKSPACE variants act on the ghost
+    // (which sits just after the cursor): SHIFT → the whole phantom, CTRL → its
+    // first word (closest to the cursor). Otherwise: SHIFT → the current
+    // sentence, CTRL → the previous word.
     let emphasis = if is_active && !selecting {
         let m = app.modifiers;
-        if m.shift() {
-            let lines = doc.lines();
-            text::sentence_start_before(&lines, cursor)
-                .filter(|&s| s != cursor)
-                .map(|s| (s, cursor))
-        } else if m.control() {
-            let lines = doc.lines();
-            text::word_before(&lines, cursor)
-        } else {
-            None
+        match (&doc.phantom, m.shift(), m.control()) {
+            (Some(rem), true, _) => Some((cursor, text::advance(cursor, rem))),
+            (Some(rem), _, true) => {
+                let word = rem[..text::first_word_end(rem)].trim_end();
+                Some((cursor, text::advance(cursor, word)))
+            }
+            (None, true, _) => {
+                let lines = doc.lines();
+                text::sentence_start_before(&lines, cursor)
+                    .filter(|&s| s != cursor)
+                    .map(|s| (s, cursor))
+            }
+            (None, _, true) => {
+                let lines = doc.lines();
+                text::word_before(&lines, cursor)
+            }
+            _ => None,
         }
     } else {
         None
@@ -195,6 +205,14 @@ fn key_binding(press: KeyPress) -> Option<Binding<Message>> {
 }
 
 fn custom_binding(press: &KeyPress) -> Option<Binding<Message>> {
+    // Only the focused editor acts on a key press. Every open editor pane sees
+    // the event (iced's default `from_key_press` already gates on focus), so
+    // without this an unfocused pane would also fire these messages — e.g. a
+    // second `DeleteSentence` that discards the phantom the focused pane just
+    // created, or a double Undo.
+    if !matches!(press.status, text_editor::Status::Focused { .. }) {
+        return None;
+    }
     let m = press.modifiers;
     match press.key.as_ref() {
         Key::Character("s") if m.control() => Some(Binding::Custom(Message::Save)),
