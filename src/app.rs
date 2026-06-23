@@ -50,6 +50,9 @@ pub enum Message {
     ModifiersChanged(iced::keyboard::Modifiers),
     /// One animation frame of typewriter centering.
     CenterTick,
+    /// The window gained focus — re-focus the active editor (see
+    /// [`on_window_focused`]).
+    WindowFocused,
     // preview
     Compiled(DocId, Result<Vec<PdfPage>, String>),
     PdfScroll(iced::mouse::ScrollDelta),
@@ -282,6 +285,20 @@ fn on_find_toggle(
         }
         _ => None,
     }
+}
+
+/// Subscription filter: the window gaining focus. We re-focus the active editor
+/// on this so its caret is visible immediately — at launch the boot-time focus
+/// can be lost if the window is created before the WM gives it focus, leaving
+/// the cursor invisible until the first click. The handler ignores it while an
+/// overlay (command bar, find bar, dialog) owns focus.
+fn on_window_focused(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    matches!(event, iced::Event::Window(window::Event::Focused))
+        .then_some(Message::WindowFocused)
 }
 
 /// Resolve a font-family name to an `iced::Font`. The built-in sentinel (and
@@ -700,6 +717,9 @@ impl App {
             iced::event::listen_with(on_modifiers),
             // CTRL+F toggles find from anywhere (so it can also close the bar).
             iced::event::listen_with(on_find_toggle),
+            // Re-focus the editor when the window gains focus, so the caret
+            // shows at launch without needing a click.
+            iced::event::listen_with(on_window_focused),
         ];
         if self.menu.is_some() {
             // The command bar's filter input ignores arrow keys, so they
@@ -1214,9 +1234,13 @@ impl App {
                             return Task::none();
                         }
                         text_editor::Action::Edit(text_editor::Edit::Backspace) => {
-                            // Backspace over a phantom discards the whole ghost.
+                            // Plain BACKSPACE leaves the phantom alone — only
+                            // SHIFT+BACKSPACE discards it. Delete the character
+                            // before the cursor as usual; the ghost stays put
+                            // just after the (now moved-back) cursor.
                             doc.history.record(doc.snapshot(), false);
-                            doc.phantom_discard();
+                            doc.modified = true;
+                            doc.content.perform(action);
                             return Task::none();
                         }
                         text_editor::Action::Edit(_) | text_editor::Action::Move(_) => {
@@ -1404,6 +1428,19 @@ impl App {
                         }
                     }
                     None => self.centering = false,
+                }
+                Task::none()
+            }
+            Message::WindowFocused => {
+                // Re-assert editor focus so the caret is visible on launch (and
+                // after alt-tabbing back). Skip it while an overlay owns the
+                // keyboard, or the active pane isn't an editor.
+                if self.menu.is_some() || self.search.is_some() || self.confirm.is_some()
+                {
+                    return Task::none();
+                }
+                if matches!(self.panes.get(self.focused), Some(PaneKind::Editor(_))) {
+                    return view::editor::focus(self.active);
                 }
                 Task::none()
             }

@@ -124,6 +124,8 @@ after the cursor, and the sidebar switches to the phantom controls. From there:
 - **SHIFT+BACKSPACE** again discards the phantom entirely (the sentence stays
   gone).
 - **CTRL+BACKSPACE** drops just the phantom's last word.
+- **Plain BACKSPACE** deletes the character before the cursor as usual and
+  *leaves the phantom in place* — only SHIFT+BACKSPACE discards the ghost.
 - Any other edit, a click, or moving the caret abandons the phantom (the
   sentence stays gone); undo/redo and saving also clear it. A phantom is ghost
   state, never written to disk.
