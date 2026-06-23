@@ -1,5 +1,9 @@
 /target
 
+# makepkg / Arch packaging build artifacts
+/pkg/
+*.pkg.tar.zst
+
 # LaTeX build artifacts
 *.aux
 *.log
