@@ -208,6 +208,7 @@ fn keybind_hints(app: &App) -> Element<'_, Message> {
                 ("⌃S", "save & preview"),
                 ("⌃Z", "undo"),
                 ("⌃Y", "redo"),
+                ("⌃H/J/K/L", "move ←/↓/↑/→"),
                 ("⌃⌫", "delete word"),
             ],
         )

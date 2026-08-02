@@ -175,7 +175,7 @@ fn split_panel(app: &App) -> Element<'_, Message> {
 
 fn help_panel(app: &App) -> Element<'_, Message> {
     let theme = &app.theme;
-    const BINDS: [(&str, &str); 18] = [
+    const BINDS: [(&str, &str); 19] = [
         ("CTRL+S", "save, then refresh/compile the preview"),
         ("CTRL+N", "new file"),
         ("CTRL+O", "open a file (system dialog)"),
@@ -189,6 +189,7 @@ fn help_panel(app: &App) -> Element<'_, Message> {
         ("SHIFT+BACKSPACE", "delete the current sentence"),
         ("ALT+N / ALT+SHIFT+N", "next / previous paragraph"),
         ("ALT+W / ALT+B", "next / previous word"),
+        ("CTRL+H / J / K / L", "move left / down / up / right"),
         ("CTRL+arrows", "move by word"),
         ("CTRL+C / X / V", "copy / cut / paste"),
         ("ESC", "command bar · back · close"),

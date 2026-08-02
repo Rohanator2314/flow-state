@@ -82,6 +82,7 @@ editing (selection, clipboard, mouse) works as expected.
 | Key | Action |
 |---|---|
 | Arrows, HOME/END, CTRL+arrows, mouse | Standard movement/selection (widget defaults) |
+| CTRL+H / CTRL+J / CTRL+K / CTRL+L | Move left / down / up / right (Vim-style home-row movement) |
 | ALT+W / ALT+B | Move to the next / previous word |
 | ALT+N / ALT+SHIFT+N | Jump to next / previous paragraph |
 | CTRL+BACKSPACE | Delete the word before the cursor (or trim the last word off an active phantom) |

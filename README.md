@@ -37,6 +37,7 @@ resize, 🗖 to maximize, ✕ to close a pane.
 | Key | Action |
 |---|---|
 | Arrows / CTRL+arrows / mouse | Standard movement & selection |
+| `CTRL+H` / `CTRL+J` / `CTRL+K` / `CTRL+L` | Move left / down / up / right |
 | `ALT+W` / `ALT+B` | Next / previous word |
 | `ALT+N` / `ALT+SHIFT+N` | Next / previous paragraph |
 | `CTRL+BACKSPACE` | Delete previous word (or trim a phantom's last word) |

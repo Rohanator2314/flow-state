@@ -239,6 +239,11 @@ fn custom_binding(press: &KeyPress) -> Option<Binding<Message>> {
         }
         Key::Character("z") if m.control() => Some(Binding::Custom(Message::Undo)),
         Key::Character("y") if m.control() => Some(Binding::Custom(Message::Redo)),
+        // Vim-style cursor movement without leaving the home row.
+        Key::Character("h") if m.control() => Some(Binding::Move(Motion::Left)),
+        Key::Character("j") if m.control() => Some(Binding::Move(Motion::Down)),
+        Key::Character("k") if m.control() => Some(Binding::Move(Motion::Up)),
+        Key::Character("l") if m.control() => Some(Binding::Move(Motion::Right)),
         Key::Character("n") if m.alt() && m.shift() => {
             Some(Binding::Custom(Message::PrevParagraph))
         }
@@ -406,5 +411,50 @@ impl iced::advanced::text::Highlighter for DimHighlighter {
 
     fn current_line(&self) -> usize {
         self.line
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use iced::keyboard::key::{Code, Physical};
+    use iced::keyboard::{Key, Modifiers};
+
+    use super::{Binding, KeyPress, Motion, custom_binding};
+    use crate::view::widget::text_editor::Status;
+
+    fn focused_ctrl_press(key: &str, code: Code) -> KeyPress {
+        KeyPress {
+            key: Key::Character(key.into()),
+            modified_key: Key::Character(key.into()),
+            physical_key: Physical::Code(code),
+            modifiers: Modifiers::CTRL,
+            text: None,
+            status: Status::Focused { is_hovered: false },
+        }
+    }
+
+    #[test]
+    fn ctrl_hjkl_map_to_vim_cursor_motions() {
+        let cases = [
+            ("h", Code::KeyH, Motion::Left),
+            ("j", Code::KeyJ, Motion::Down),
+            ("k", Code::KeyK, Motion::Up),
+            ("l", Code::KeyL, Motion::Right),
+        ];
+
+        for (key, code, expected) in cases {
+            assert!(matches!(
+                custom_binding(&focused_ctrl_press(key, code)),
+                Some(Binding::Move(actual)) if actual == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn vim_cursor_motions_require_editor_focus() {
+        let mut press = focused_ctrl_press("h", Code::KeyH);
+        press.status = Status::Active;
+
+        assert!(custom_binding(&press).is_none());
     }
 }
