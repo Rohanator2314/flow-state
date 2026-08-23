@@ -8,7 +8,7 @@
 # that reads `git describe`.
 
 pkgname=flow-state
-pkgver=0.1.41
+pkgver=0.1.42
 pkgrel=1
 pkgdesc='Distraction-free LaTeX writing app with a typewriter-style editor'
 arch=('x86_64')
