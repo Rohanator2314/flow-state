@@ -153,9 +153,16 @@ pub fn view(app: &App, id: DocId) -> Element<'_, Message> {
     //   - the emphasis underline (CTRL/SHIFT), over the glyphs;
     //   - the active-paragraph glow (opt-in), behind them.
     let glow = (is_active && app.config.paragraph_glow).then(|| app.active_paragraph());
-    let decorations = if emphasis.is_some() || glow.is_some() {
+    let decorations = if emphasis.is_some() || glow.is_some() || !doc.spell_issues.is_empty() {
         doc.content.with_buffer(|buffer| {
             let mut quads = Vec::new();
+            let spelling = Color {
+                a: 0.82,
+                ..theme.warning
+            };
+            for issue in &doc.spell_issues {
+                quads.extend(underline_quads(buffer, issue.start, issue.end, spelling));
+            }
             if let Some((start, end)) = emphasis {
                 quads.extend(underline_quads(buffer, start, end, theme.accent));
             }
@@ -220,6 +227,9 @@ fn custom_binding(press: &KeyPress) -> Option<Binding<Message>> {
         // where the writer almost always is.
         Key::Character("n") if m.control() => Some(Binding::Custom(Message::NewFile)),
         Key::Character("o") if m.control() => Some(Binding::Custom(Message::OpenFilePicker)),
+        Key::Character(".") if m.control() => {
+            Some(Binding::Custom(Message::OpenSpellCorrection))
+        }
         // CTRL+F (toggle find) is handled by a global subscription in `app.rs`,
         // so it works to *close* the bar too — at which point the editor is
         // unfocused and this keymap wouldn't run.
@@ -420,6 +430,7 @@ mod tests {
     use iced::keyboard::{Key, Modifiers};
 
     use super::{Binding, KeyPress, Motion, custom_binding};
+    use crate::app::Message;
     use crate::view::widget::text_editor::Status;
 
     fn focused_ctrl_press(key: &str, code: Code) -> KeyPress {
@@ -456,5 +467,13 @@ mod tests {
         press.status = Status::Active;
 
         assert!(custom_binding(&press).is_none());
+    }
+
+    #[test]
+    fn ctrl_period_opens_spell_correction() {
+        assert!(matches!(
+            custom_binding(&focused_ctrl_press(".", Code::Period)),
+            Some(Binding::Custom(Message::OpenSpellCorrection))
+        ));
     }
 }

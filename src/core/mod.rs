@@ -10,6 +10,7 @@ pub mod center;
 pub mod config;
 pub mod fonts;
 pub mod latex;
+pub mod spell;
 pub mod text;
 pub mod theme;
 pub mod undo;

@@ -6,9 +6,7 @@
 //! stays at stack layer 0, so the editor's widget tree (and its focus state)
 //! never shifts when a dialog opens or closes.
 
-use iced::widget::{
-    button, center, column, container, mouse_area, opaque, row, scrollable, text,
-};
+use iced::widget::{button, center, column, container, mouse_area, opaque, row, scrollable, text};
 use iced::{Background, Border, Color, Element, Font, Shadow};
 
 use crate::app::{App, Message, PendingAction};
@@ -98,6 +96,52 @@ pub fn compile_error<'a>(app: &App, error: &'a str) -> Element<'a, Message> {
     )
 }
 
+pub fn open_picker(app: &App) -> Element<'static, Message> {
+    let file_choice = column![
+        text("File").size(14).color(app.theme.text),
+        text("Open a document in a pane")
+            .size(12)
+            .color(app.theme.text_inactive),
+    ]
+    .spacing(4);
+    let folder_choice = column![
+        text("Folder").size(14).color(app.theme.text),
+        text("Use it as the sidebar directory")
+            .size(12)
+            .color(app.theme.text_inactive),
+    ]
+    .spacing(4);
+
+    card(
+        app,
+        column![
+            text("Open").size(16),
+            text("Choose a document to edit or a folder to browse.")
+                .size(13)
+                .color(app.theme.text_inactive),
+            row![
+                button(file_choice)
+                    .on_press(Message::ChooseFileToOpen)
+                    .width(220)
+                    .padding(14)
+                    .style(crate::view::style::choice_button(&app.theme)),
+                button(folder_choice)
+                    .on_press(Message::ChooseFolderToOpen)
+                    .width(220)
+                    .padding(14)
+                    .style(crate::view::style::choice_button(&app.theme)),
+            ]
+            .spacing(10),
+            button(text("Cancel").size(13))
+                .on_press(Message::CloseOpenPicker)
+                .padding([5, 8])
+                .style(crate::view::style::bare_button(&app.theme)),
+        ]
+        .spacing(12)
+        .into(),
+    )
+}
+
 fn card<'a>(app: &App, body: Element<'a, Message>) -> Element<'a, Message> {
     let surface = app.theme.surface;
     let text_color = app.theme.text;
@@ -109,7 +153,10 @@ fn card<'a>(app: &App, body: Element<'a, Message>) -> Element<'a, Message> {
             text_color: Some(text_color),
             border: Border::default().rounded(8),
             shadow: Shadow {
-                color: Color { a: 0.4, ..Color::BLACK },
+                color: Color {
+                    a: 0.4,
+                    ..Color::BLACK
+                },
                 offset: iced::Vector::new(0.0, 4.0),
                 blur_radius: 18.0,
             },

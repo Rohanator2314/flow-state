@@ -18,6 +18,7 @@ pub mod menu;
 pub mod preview;
 pub mod search;
 pub mod sidebar;
+pub mod spell;
 pub mod style;
 pub mod widget;
 
@@ -83,9 +84,22 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 .into(),
         );
     }
+    if app.spell_correction.is_some() {
+        layers.push(
+            container(spell::bar(app))
+                .width(Fill)
+                .height(Fill)
+                .align_x(iced::Right)
+                .align_y(iced::Top)
+                .padding(Padding::new(10.0))
+                .into(),
+        );
+    }
 
     if let Some(pending) = &app.confirm {
         layers.push(dialogs::modal_layer(dialogs::confirm(app, pending)));
+    } else if app.open_picker {
+        layers.push(dialogs::modal_layer(dialogs::open_picker(app)));
     } else if let Some(error) = &app.active_doc().compile_error {
         layers.push(dialogs::modal_layer(dialogs::compile_error(app, error)));
     } else if let Some(menu) = &app.menu {

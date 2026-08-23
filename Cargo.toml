@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 
+[profile.test]
+incremental = false
+debug = 0
+
 [dependencies]
 anyhow = "1.0.102"
 dirs = "6.0.0"
@@ -17,6 +21,8 @@ serde = { version = "1.0.228", features = ["derive"] }
 # Matches the version iced 0.14 uses; needed by the vendored text_editor
 # (`KeyPress::text`). See src/view/widget/text_editor.rs.
 smol_str = "0.2"
+spellbook = "0.4.2"
 tokio = { version = "1.52.3", features = ["rt"] }
 toml = "1.1.2"
+unicode-segmentation = "1.13.3"
 walkdir = "2.5.0"

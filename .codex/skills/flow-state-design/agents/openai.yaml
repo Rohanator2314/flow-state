@@ -1,0 +1,3 @@
+interface:
+  display_name: "Flow State Design"
+  short_description: "Refine Flow State's quiet, writing-first iced UI"

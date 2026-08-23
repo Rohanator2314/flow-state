@@ -8,7 +8,7 @@
 # that reads `git describe`.
 
 pkgname=flow-state
-pkgver=0.1.2
+pkgver=0.1.41
 pkgrel=1
 pkgdesc='Distraction-free LaTeX writing app with a typewriter-style editor'
 arch=('x86_64')
@@ -17,6 +17,7 @@ license=('GPL-3.0-or-later')
 depends=('gcc-libs' 'glibc')
 makedepends=('cargo')
 optdepends=(
+  'hunspell-en_us: US English dictionary for spell checking'
   'texlive-latex: compile the LaTeX preview (pdflatex/xelatex)'
   'poppler: render the compiled PDF into the preview pane (pdftoppm)'
 )

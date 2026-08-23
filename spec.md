@@ -36,6 +36,10 @@ writing.
   color. A "new file…" input at the bottom creates files. If the focused
   buffer is untitled, creating a file names that buffer — text written so far
   is carried over; otherwise the new file opens in its own pane.
+- Single-clicking a folder expands it; double-clicking makes it the current
+  directory. Right-clicking a file or folder opens create/rename/delete actions.
+  Directory deletion is recursive but confirmed, and paths containing open
+  documents cannot be deleted. Renaming a directory remaps open document paths.
 - **Panes**: each open file is an editor pane; one shared preview pane sits
   alongside. They live in a pane grid with halloy-style gaps and rounded,
   focus-highlighted borders — drag a title bar to swap panes, drag the
@@ -89,8 +93,9 @@ editing (selection, clipboard, mouse) works as expected.
 | SHIFT+BACKSPACE | "Delete" the current sentence into a phantom (press again to discard it) |
 | TAB | Accept the active phantom (otherwise inserts a tab) |
 | CTRL+N | New (untitled) file in its own pane |
-| CTRL+O | Open a file via the system file picker |
+| CTRL+O | Open a file, or choose a folder as the sidebar's current directory |
 | CTRL+F | Toggle find in the focused pane (ENTER / ‹ › step matches, ESC or a second CTRL+F closes) |
+| CTRL+. | Correct the misspelling at the caret, or jump to the next one (wrapping) |
 | CTRL+W | Close the focused pane (confirming if it has unsaved changes) |
 | CTRL+TAB / CTRL+SHIFT+TAB | Focus the next / previous pane |
 | CTRL+Q | Quit (prompts to save if anything is unsaved) |
@@ -156,11 +161,17 @@ Each root command leads to its setting:
   bar.
 - **typewriter scroll** — toggles centering the active paragraph.
 - **paragraph glow** — toggles the active-paragraph glow.
+- **spell checking** — toggles local Hunspell-backed checking.
 - **help** — the keybinding reference above. Typing `?` in the root bar
   jumps straight to it.
 
 Confirmed changes persist to config.toml. When the bar closes, focus returns
 to the editor.
+
+The CTRL+. correction chooser offers replacements, ignore-once, and add to
+dictionary. Added words are persisted per language in
+`~/.config/flow-state/dictionaries/<language>.personal`, loaded into the
+Hunspell dictionary at startup, and applied to the running checker immediately.
 
 **SHIFT+BACKSPACE detail:** "Current sentence" is the text since the last
 `.`, `?`, `!`, or paragraph start — whichever comes first before the cursor.
@@ -219,6 +230,9 @@ focus_dimming = true          # the dimmed-paragraphs focus effect
 typewriter_scroll = false     # keep the active paragraph vertically centered
 paragraph_glow = false        # soft glow behind the active paragraph
 editor_font = "JetBrains Mono"  # installed font family; empty = default sans
+spell_check = true            # local, background spell checking
+spell_language = "en_US"      # Hunspell dictionary basename
+spell_dictionary = ""         # optional basename, .aff/.dic file, or folder
 ```
 
 All options are editable live from the ESC command bar, which persists changes back

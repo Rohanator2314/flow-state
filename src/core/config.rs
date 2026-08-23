@@ -32,6 +32,13 @@ pub struct Config {
     pub paragraph_glow: bool,
     /// Editor font family name; empty = the built-in sans-serif default.
     pub editor_font: String,
+    /// Check spelling locally using a Hunspell-format dictionary.
+    pub spell_check: bool,
+    /// Hunspell locale basename, such as `en_US`.
+    pub spell_language: String,
+    /// Optional dictionary basename, `.aff`/`.dic` file, or containing folder.
+    /// Empty discovers the locale in application and system directories.
+    pub spell_dictionary: String,
 }
 
 impl Default for Config {
@@ -44,6 +51,9 @@ impl Default for Config {
             typewriter_scroll: false,
             paragraph_glow: false,
             editor_font: String::new(),
+            spell_check: true,
+            spell_language: "en_US".to_string(),
+            spell_dictionary: String::new(),
         }
     }
 }

@@ -10,13 +10,16 @@ use iced::{Background, Border, Color, Shadow};
 use crate::core::theme::Theme;
 
 /// halloy's bare/transparent button.
-pub fn bare_button(theme: &Theme) -> impl Fn(&iced::Theme, button::Status) -> button::Style + use<> {
+pub fn bare_button(
+    theme: &Theme,
+) -> impl Fn(&iced::Theme, button::Status) -> button::Style + use<> {
     let text = theme.text;
     move |_, status| button::Style {
         background: Some(Background::Color(match status {
-            button::Status::Hovered | button::Status::Pressed => {
-                Color { a: 0.06, ..Color::WHITE }
-            }
+            button::Status::Hovered | button::Status::Pressed => Color {
+                a: 0.06,
+                ..Color::WHITE
+            },
             _ => Color::TRANSPARENT,
         })),
         text_color: match status {
@@ -43,10 +46,95 @@ pub fn card(theme: &Theme) -> impl Fn(&iced::Theme) -> container::Style + use<> 
             radius: 4.0.into(),
         },
         shadow: Shadow {
-            color: Color { a: 0.4, ..Color::BLACK },
+            color: Color {
+                a: 0.4,
+                ..Color::BLACK
+            },
             offset: iced::Vector::new(0.0, 4.0),
             blur_radius: 18.0,
         },
         ..container::Style::default()
+    }
+}
+
+/// A quiet, bordered panel embedded in persistent chrome. Unlike [`card`], it
+/// does not cast a shadow because it is part of the sidebar flow, not floating
+/// above the application.
+pub fn inline_panel(theme: &Theme) -> impl Fn(&iced::Theme) -> container::Style + use<> {
+    let text = theme.text;
+    let border_color = theme.border;
+    move |_| container::Style {
+        background: Some(Background::Color(Color {
+            a: 0.025,
+            ..Color::WHITE
+        })),
+        text_color: Some(text),
+        border: Border {
+            color: border_color,
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// Compact full-row action used by inline utility menus.
+pub fn action_button(
+    theme: &Theme,
+    destructive: bool,
+) -> impl Fn(&iced::Theme, button::Status) -> button::Style + use<> {
+    let text = if destructive {
+        theme.danger
+    } else {
+        theme.text
+    };
+    move |_, status| button::Style {
+        background: match status {
+            button::Status::Hovered => Some(Background::Color(Color {
+                a: 0.06,
+                ..Color::WHITE
+            })),
+            button::Status::Pressed => Some(Background::Color(Color {
+                a: 0.10,
+                ..Color::WHITE
+            })),
+            _ => None,
+        },
+        text_color: match status {
+            button::Status::Disabled => Color { a: 0.2, ..text },
+            _ => text,
+        },
+        border: Border::default().rounded(4),
+        ..button::Style::default()
+    }
+}
+
+/// A bordered, roomy choice in a modal. Hovering strengthens the border while
+/// the accent remains reserved for actual focus and selection elsewhere.
+pub fn choice_button(
+    theme: &Theme,
+) -> impl Fn(&iced::Theme, button::Status) -> button::Style + use<> {
+    let text = theme.text;
+    let border = theme.border;
+    let hover_border = theme.text_inactive;
+    move |_, status| {
+        let active = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: active.then_some(Background::Color(Color {
+                a: if matches!(status, button::Status::Pressed) {
+                    0.10
+                } else {
+                    0.06
+                },
+                ..Color::WHITE
+            })),
+            text_color: text,
+            border: Border {
+                color: if active { hover_border } else { border },
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..button::Style::default()
+        }
     }
 }

@@ -175,11 +175,12 @@ fn split_panel(app: &App) -> Element<'_, Message> {
 
 fn help_panel(app: &App) -> Element<'_, Message> {
     let theme = &app.theme;
-    const BINDS: [(&str, &str); 19] = [
+    const BINDS: [(&str, &str); 20] = [
         ("CTRL+S", "save, then refresh/compile the preview"),
         ("CTRL+N", "new file"),
-        ("CTRL+O", "open a file (system dialog)"),
+        ("CTRL+O", "open a file or folder"),
         ("CTRL+F", "find in the focused pane"),
+        ("CTRL+.", "correct spelling at the cursor"),
         ("CTRL+W", "close the focused pane"),
         ("CTRL+TAB / CTRL+SHIFT+TAB", "focus the next / previous pane"),
         ("CTRL+Q", "quit"),

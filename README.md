@@ -16,6 +16,8 @@ natively. Everything else is plain text, full width.
   rendering where unavailable).
 - For LaTeX preview: `pdflatex` (or `xelatex`) and `pdftoppm` (poppler-utils)
   on `$PATH`. 
+- For spell checking: a Hunspell dictionary such as Arch's `hunspell-en_us`.
+  Dictionaries are read locally; document text is never sent to a service.
 
 ## Usage
 
@@ -27,6 +29,9 @@ cargo run --release --              # start with an untitled buffer
 Clicking a file in the sidebar opens it in its own editor pane (so opening
 files doesn't replace what you're working on); clicking an already-open file
 just refocuses it. The preview pane follows whichever editor is focused.
+Single-click a folder to expand it, or double-click it to make it the sidebar's
+current directory. Right-click a file or folder to create a sibling/child,
+rename it, or delete it (deletion is confirmed, and open files are protected).
 Create files with the "new file…" input at the sidebar's bottom — if the
 focused buffer is the untitled scratch one, that buffer is named and nothing
 you wrote is lost. Drag pane title bars to swap panes, drag the splitter to
@@ -45,6 +50,8 @@ resize, 🗖 to maximize, ✕ to close a pane.
 | `TAB` | Accept the active phantom (else insert a tab) |
 | `CTRL+Z` / `CTRL+SHIFT+Z` / `CTRL+Y` | Undo / redo |
 | `CTRL+S` | Save, then refresh/compile the preview |
+| `CTRL+O` | Open a file, or choose a folder as the current directory |
+| `CTRL+.` | Correct the misspelled word at the cursor |
 | `CTRL+C/X/V` | Clipboard |
 | `ESC` | Open the command bar / go back / close |
 
@@ -58,6 +65,13 @@ dimmed "phantom" of it after the cursor. Type the same letters to fill it back
 in (different letters push it along), `TAB` to accept it, `SHIFT+BACKSPACE`
 again to discard it, or `CTRL+BACKSPACE` to drop its last word. Phantoms are
 never saved to disk.
+
+Misspelled words receive a quiet warning-colored underline after typing pauses.
+Press `CTRL+.` away from an underlined word to jump to the next misspelling
+(wrapping at the end), then press it again to type a replacement or choose a
+dictionary suggestion. The chooser can also add the word to the current
+language's personal dictionary. Corrections are one undoable edit. Checking
+pauses while a sentence phantom is active so ghost text is never corrected.
 
 Closing the window with unsaved changes asks save / discard / cancel.
 
@@ -78,6 +92,7 @@ setting:
   (scrolls to re-center on paragraph change; a manual scroll pauses it until
   you type again).
 - **paragraph glow** — a soft glow behind the active paragraph.
+- **spell checking** — toggles local, background spell checking.
 - **help** — the keybinding reference; typing `?` in the bar jumps straight
   there.
 
@@ -97,7 +112,16 @@ focus_dimming = true          # dim paragraphs outside the active one
 typewriter_scroll = false     # keep the active paragraph vertically centered
 paragraph_glow = false        # soft glow behind the active paragraph
 editor_font = "JetBrains Mono"  # installed font family; empty = default sans
+spell_check = true            # local Hunspell-backed checking
+spell_language = "en_US"      # dictionary basename
+spell_dictionary = ""         # optional basename, .aff/.dic file, or folder
 ```
+
+With an empty `spell_dictionary`, flow-state looks in
+`~/.config/flow-state/dictionaries/`, `/usr/share/hunspell/`, and the usual
+MySpell directories for `<spell_language>.aff` and `.dic`.
+Words added from the correction chooser are stored one per line in
+`~/.config/flow-state/dictionaries/<spell_language>.personal`.
 
 All of these are also editable live from the ESC command bar. The file is
 **hot-reloaded**: edit `config.toml` (or the active theme file) in any editor

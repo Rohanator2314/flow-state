@@ -13,21 +13,27 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use iced::widget::{image, markdown, pane_grid};
-use iced::{window, Element, Subscription, Task, Theme};
+use iced::{Element, Subscription, Task, Theme, window};
 
 use crate::view::widget::text_editor;
 
 use crate::core::config::Config;
+use crate::core::spell::{LoadedDictionary, SpellIssue};
 use crate::core::theme::Theme as FlowTheme;
 use crate::core::undo::{History, Snapshot};
-use crate::core::{self, file_kind, text, FileKind};
-use crate::view::{self, sidebar::Sidebar};
+use crate::core::{self, FileKind, file_kind, text};
+use crate::view::{
+    self,
+    sidebar::{self, ContextMode, Sidebar},
+};
 
 /// How long transient status-bar messages stay visible.
 const STATUS_TTL: Duration = Duration::from_secs(4);
+const SPELL_DEBOUNCE: Duration = Duration::from_millis(350);
 
 /// Identifies an open document (and so its editor pane). Monotonic — never
 /// reused, so a stale id simply finds nothing.
@@ -45,6 +51,21 @@ pub enum Message {
     PhantomAccept,
     NextParagraph,
     PrevParagraph,
+    // spell checking/correction
+    SpellDictionaryLoaded(u64, Result<LoadedDictionary, String>),
+    SpellTick,
+    SpellChecked(DocId, u64, Vec<SpellIssue>),
+    OpenSpellCorrection,
+    SpellSuggestions(DocId, u64, Vec<String>),
+    SpellCorrectionInput(String),
+    SpellCorrectionPrev,
+    SpellCorrectionNext,
+    SpellCorrectionSubmit,
+    SpellCorrectionApply(String),
+    SpellCorrectionIgnore,
+    AddSpellWord,
+    SpellWordSaved(u64, String, Result<(), String>),
+    CloseSpellCorrection,
     /// Held-modifier set changed — drives the sidebar keybind hints, the
     /// accent emphasis, and PDF wheel zoom.
     ModifiersChanged(iced::keyboard::Modifiers),
@@ -66,15 +87,29 @@ pub enum Message {
     ClosePane(pane_grid::Pane),
     // sidebar
     ToggleDir(PathBuf),
+    ChangeDirectory(PathBuf),
     OpenFile(PathBuf),
+    OpenSidebarContext(PathBuf, bool),
+    CloseSidebarContext,
+    SidebarContextCreateFile,
+    SidebarContextCreateFolder,
+    SidebarContextRename,
+    SidebarContextDelete,
+    SidebarContextConfirmDelete,
+    SidebarContextInput(String),
+    SidebarContextSubmit,
     NewFileInput(String),
     CreateFile,
     // quality-of-life keybinds
     /// CTRL+N — open a fresh untitled scratch pane.
     NewFile,
-    /// CTRL+O — pick a file with the system dialog, then open it.
+    /// CTRL+O — choose a file to open or a folder to make current.
     OpenFilePicker,
+    ChooseFileToOpen,
+    ChooseFolderToOpen,
+    CloseOpenPicker,
     FilePicked(Option<PathBuf>),
+    FolderPicked(Option<PathBuf>),
     /// CTRL+W — close the focused pane (confirming if it has unsaved changes).
     CloseActivePane,
     /// CTRL+TAB / CTRL+SHIFT+TAB — move focus to the next / previous pane.
@@ -139,6 +174,17 @@ pub struct Search {
     origin: text::Pos,
 }
 
+/// The keyboard-first correction chooser opened by CTRL+.
+pub struct SpellCorrection {
+    pub doc_id: DocId,
+    pub revision: u64,
+    pub issue: SpellIssue,
+    pub input: String,
+    pub suggestions: Vec<String>,
+    pub selected: usize,
+    pub loading: bool,
+}
+
 /// Root command-bar entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
@@ -149,11 +195,12 @@ pub enum Command {
     Dimming,
     Typewriter,
     Glow,
+    Spelling,
     Help,
 }
 
 impl Command {
-    const ALL: [Command; 8] = [
+    const ALL: [Command; 9] = [
         Command::Theme,
         Command::Font,
         Command::Compiler,
@@ -161,6 +208,7 @@ impl Command {
         Command::Dimming,
         Command::Typewriter,
         Command::Glow,
+        Command::Spelling,
         Command::Help,
     ];
 }
@@ -223,7 +271,7 @@ fn on_escape(
     _status: iced::event::Status,
     _window: window::Id,
 ) -> Option<Message> {
-    use iced::keyboard::{key::Named, Event, Key};
+    use iced::keyboard::{Event, Key, key::Named};
     matches!(
         event,
         iced::Event::Keyboard(Event::KeyPressed {
@@ -240,13 +288,31 @@ fn on_menu_arrows(
     _status: iced::event::Status,
     _window: window::Id,
 ) -> Option<Message> {
-    use iced::keyboard::{key::Named, Event, Key};
+    use iced::keyboard::{Event, Key, key::Named};
     let iced::Event::Keyboard(Event::KeyPressed { key, .. }) = event else {
         return None;
     };
     match key {
         Key::Named(Named::ArrowUp) => Some(Message::MenuPrev),
         Key::Named(Named::ArrowDown) => Some(Message::MenuNext),
+        _ => None,
+    }
+}
+
+/// Subscription filter: up/down choose a spelling suggestion while the
+/// correction input owns keyboard focus.
+fn on_spell_arrows(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    use iced::keyboard::{Event, Key, key::Named};
+    let iced::Event::Keyboard(Event::KeyPressed { key, .. }) = event else {
+        return None;
+    };
+    match key {
+        Key::Named(Named::ArrowUp) => Some(Message::SpellCorrectionPrev),
+        Key::Named(Named::ArrowDown) => Some(Message::SpellCorrectionNext),
         _ => None,
     }
 }
@@ -260,9 +326,7 @@ fn on_modifiers(
 ) -> Option<Message> {
     use iced::keyboard::Event;
     match event {
-        iced::Event::Keyboard(Event::ModifiersChanged(m)) => {
-            Some(Message::ModifiersChanged(m))
-        }
+        iced::Event::Keyboard(Event::ModifiersChanged(m)) => Some(Message::ModifiersChanged(m)),
         _ => None,
     }
 }
@@ -297,8 +361,7 @@ fn on_window_focused(
     _status: iced::event::Status,
     _window: window::Id,
 ) -> Option<Message> {
-    matches!(event, iced::Event::Window(window::Event::Focused))
-        .then_some(Message::WindowFocused)
+    matches!(event, iced::Event::Window(window::Event::Focused)).then_some(Message::WindowFocused)
 }
 
 /// Resolve a font-family name to an `iced::Font`. The built-in sentinel (and
@@ -323,6 +386,7 @@ impl std::fmt::Display for Command {
             Command::Dimming => "focus dimming — toggle paragraph dimming",
             Command::Typewriter => "typewriter scroll — center the active paragraph",
             Command::Glow => "paragraph glow — glow the active paragraph",
+            Command::Spelling => "spell checking — toggle local corrections",
             Command::Help => "help — keybindings (?)",
         })
     }
@@ -362,6 +426,15 @@ pub struct Document {
     /// SHIFT/CTRL+BACKSPACE to discard it (whole, or the last word). `None`
     /// when no phantom is active. Stripped from the buffer on save.
     pub phantom: Option<String>,
+    /// Derived spelling diagnostics for the current real document text.
+    pub spell_issues: Vec<SpellIssue>,
+    /// Bumped for every text mutation; gates asynchronous scan/suggestion
+    /// results so byte spans from an older buffer are never applied.
+    spell_revision: u64,
+    /// When this document last became eligible for a debounced scan.
+    spell_dirty_since: Option<Instant>,
+    /// A scan is currently running for some revision of this document.
+    spell_in_flight: bool,
     /// The buffer text as last saved or loaded — the baseline `modified` is
     /// measured against, so reverting edits (or undoing to the saved state)
     /// clears the unsaved marker. See [`Document::refresh_modified`].
@@ -380,6 +453,10 @@ impl Document {
             compiling: false,
             compile_error: None,
             phantom: None,
+            spell_issues: Vec::new(),
+            spell_revision: 0,
+            spell_dirty_since: None,
+            spell_in_flight: false,
             saved_text: String::new(),
         }
     }
@@ -400,6 +477,10 @@ impl Document {
             compiling: false,
             compile_error: None,
             phantom: None,
+            spell_issues: Vec::new(),
+            spell_revision: 0,
+            spell_dirty_since: None,
+            spell_in_flight: false,
             saved_text,
         };
         // `with_text` leaves the cursor — and the viewport — at the end of the
@@ -463,11 +544,37 @@ impl Document {
     /// Select `[a, b)` and delete it, leaving the cursor at `a`.
     fn delete_span(&mut self, a: text::Pos, b: text::Pos) {
         self.content.move_to(text_editor::Cursor {
-            position: text_editor::Position { line: a.0, column: a.1 },
-            selection: Some(text_editor::Position { line: b.0, column: b.1 }),
+            position: text_editor::Position {
+                line: a.0,
+                column: a.1,
+            },
+            selection: Some(text_editor::Position {
+                line: b.0,
+                column: b.1,
+            }),
         });
         self.content
             .perform(text_editor::Action::Edit(text_editor::Edit::Backspace));
+    }
+
+    /// Replace an exact byte span as one undoable edit.
+    fn replace_span(&mut self, start: text::Pos, end: text::Pos, replacement: String) {
+        self.history.record(self.snapshot(), false);
+        self.content.move_to(text_editor::Cursor {
+            position: text_editor::Position {
+                line: start.0,
+                column: start.1,
+            },
+            selection: Some(text_editor::Position {
+                line: end.0,
+                column: end.1,
+            }),
+        });
+        self.content
+            .perform(text_editor::Action::Edit(text_editor::Edit::Paste(
+                Arc::new(replacement),
+            )));
+        self.modified = true;
     }
 
     /// Discard an active phantom by removing its remaining ghost text from the
@@ -554,6 +661,12 @@ impl Document {
     fn refresh_modified(&mut self) {
         self.modified = self.phantom.is_some() || self.content.text() != self.saved_text;
     }
+
+    fn invalidate_spelling(&mut self, enabled: bool) {
+        self.spell_revision = self.spell_revision.wrapping_add(1);
+        self.spell_issues.clear();
+        self.spell_dirty_since = (enabled && self.phantom.is_none()).then(Instant::now);
+    }
 }
 
 /// One rasterized PDF page: its image plus aspect ratio (height / width), so
@@ -608,8 +721,16 @@ pub struct App {
     pub focused: pane_grid::Pane,
     pub sidebar: Sidebar,
     pub confirm: Option<PendingAction>,
+    /// File-or-folder choice shown before CTRL+O launches a native picker.
+    pub open_picker: bool,
     /// The CTRL+F find bar, when open.
     pub search: Option<Search>,
+    /// The CTRL+. correction chooser, when open.
+    pub spell_correction: Option<SpellCorrection>,
+    /// Parsed dictionary shared by background scans and suggestion jobs.
+    spell_dictionary: Option<Arc<RwLock<spellbook::Dictionary>>>,
+    spell_loading: bool,
+    spell_load_revision: u64,
     /// The escape menu (command bar), when open.
     pub menu: Option<Menu>,
     /// The editor/preview split, for live ratio changes from the menu.
@@ -650,7 +771,12 @@ impl App {
             focused: first,
             sidebar: Sidebar::new(PathBuf::from(".")),
             confirm: None,
+            open_picker: false,
             search: None,
+            spell_correction: None,
+            spell_dictionary: None,
+            spell_loading: false,
+            spell_load_revision: 0,
             menu: None,
             preview_split: None,
             status: None,
@@ -663,7 +789,8 @@ impl App {
         }
         // Start ready to type.
         let focus = view::editor::focus(app.active);
-        (app, focus)
+        let spelling = app.load_spell_dictionary();
+        (app, Task::batch([focus, spelling]))
     }
 
     /// The focused document.
@@ -726,10 +853,22 @@ impl App {
             // arrive here and drive the list selection.
             subs.push(iced::event::listen_with(on_menu_arrows));
         }
+        if self.spell_correction.is_some() {
+            subs.push(iced::event::listen_with(on_spell_arrows));
+        }
         // Per-frame ticks only while a centering animation is converging — no
         // idle repaint when the active paragraph is already centered.
         if self.config.typewriter_scroll && self.centering {
             subs.push(iced::window::frames().map(|_| Message::CenterTick));
+        }
+        if self.config.spell_check
+            && self.spell_dictionary.is_some()
+            && self
+                .docs
+                .get(&self.active)
+                .is_some_and(|doc| doc.spell_dirty_since.is_some())
+        {
+            subs.push(iced::time::every(Duration::from_millis(100)).map(|_| Message::SpellTick));
         }
         // Always-on 1 s tick: expires status messages and polls the config
         // files for hot-reload.
@@ -743,6 +882,220 @@ impl App {
 
     fn set_status(&mut self, msg: impl Into<String>) {
         self.status = Some((msg.into(), Instant::now()));
+    }
+
+    fn load_spell_dictionary(&mut self) -> Task<Message> {
+        self.spell_load_revision = self.spell_load_revision.wrapping_add(1);
+        let load_revision = self.spell_load_revision;
+        self.spell_dictionary = None;
+        self.spell_loading = false;
+        self.spell_correction = None;
+        for doc in self.docs.values_mut() {
+            doc.spell_revision = doc.spell_revision.wrapping_add(1);
+            doc.spell_issues.clear();
+            doc.spell_dirty_since = None;
+        }
+        if !self.config.spell_check {
+            return Task::none();
+        }
+
+        self.spell_loading = true;
+        let language = self.config.spell_language.clone();
+        let configured = self.config.spell_dictionary.clone();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    core::spell::load_dictionary(&language, &configured)
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("spell dictionary task failed: {e}")))
+            },
+            move |result| Message::SpellDictionaryLoaded(load_revision, result),
+        )
+    }
+
+    fn mark_all_spelling_dirty(&mut self) {
+        let enabled = self.config.spell_check && self.spell_dictionary.is_some();
+        for doc in self.docs.values_mut() {
+            doc.invalidate_spelling(enabled);
+        }
+    }
+
+    fn start_spell_check(&mut self) -> Task<Message> {
+        let Some(dictionary) = self.spell_dictionary.clone() else {
+            return Task::none();
+        };
+        let id = self.active;
+        let Some(doc) = self.docs.get_mut(&id) else {
+            return Task::none();
+        };
+        let ready = doc
+            .spell_dirty_since
+            .is_some_and(|since| since.elapsed() >= SPELL_DEBOUNCE)
+            && !doc.spell_in_flight
+            && doc.phantom.is_none();
+        if !ready {
+            return Task::none();
+        }
+
+        let revision = doc.spell_revision;
+        let input = doc.content.text();
+        doc.spell_dirty_since = None;
+        doc.spell_in_flight = true;
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    dictionary
+                        .read()
+                        .map(|dictionary| core::spell::check_text(&dictionary, &input))
+                        .unwrap_or_default()
+                })
+                .await
+                .unwrap_or_default()
+            },
+            move |issues| Message::SpellChecked(id, revision, issues),
+        )
+    }
+
+    fn open_spell_correction(&mut self) -> Task<Message> {
+        if !self.config.spell_check {
+            self.set_status("spell checking is off — enable it from ESC");
+            return Task::none();
+        }
+        let Some(dictionary) = self.spell_dictionary.clone() else {
+            self.set_status(if self.spell_loading {
+                "spell dictionary is still loading"
+            } else {
+                "spell dictionary unavailable"
+            });
+            return Task::none();
+        };
+        let doc = self.active_doc();
+        if doc.phantom.is_some() {
+            self.set_status("finish or discard the phantom before correcting spelling");
+            return Task::none();
+        }
+        let cursor = doc.cursor_pos();
+        let issue = core::spell::issue_near(&doc.spell_issues, cursor).cloned();
+        if issue.is_none() {
+            let Some(next) = core::spell::next_issue(&doc.spell_issues, cursor).cloned() else {
+                self.set_status("no misspellings in this document");
+                return Task::none();
+            };
+            let word = next.word.clone();
+            let doc = self.active_doc_mut();
+            doc.move_to(next.start);
+            doc.history.break_run();
+            self.set_status(format!("next misspelling: {word}"));
+            self.request_center();
+            return view::editor::focus(self.active);
+        }
+        let issue = issue.expect("checked above");
+        let id = self.active;
+        let revision = doc.spell_revision;
+        let word = issue.word.clone();
+        self.search = None;
+        self.menu = None;
+        self.spell_correction = Some(SpellCorrection {
+            doc_id: id,
+            revision,
+            issue,
+            input: word.clone(),
+            suggestions: Vec::new(),
+            selected: 0,
+            loading: true,
+        });
+        let focus = view::spell::focus_input();
+        let suggestions = Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let mut suggestions = Vec::new();
+                    if let Ok(dictionary) = dictionary.read() {
+                        dictionary.suggest(&word, &mut suggestions);
+                    }
+                    suggestions.truncate(8);
+                    suggestions
+                })
+                .await
+                .unwrap_or_default()
+            },
+            move |suggestions| Message::SpellSuggestions(id, revision, suggestions),
+        );
+        Task::batch([focus, suggestions])
+    }
+
+    fn apply_spell_correction(&mut self, replacement: String) -> Task<Message> {
+        let Some(correction) = self.spell_correction.as_ref() else {
+            return Task::none();
+        };
+        let replacement = replacement.trim().to_string();
+        if replacement.is_empty() {
+            self.set_status("correction cannot be empty");
+            return view::spell::focus_input();
+        }
+        if replacement == correction.issue.word {
+            self.set_status("choose or type a different spelling");
+            return view::spell::focus_input();
+        }
+        let correction = self.spell_correction.take().expect("checked above");
+        let Some(doc) = self.docs.get_mut(&correction.doc_id) else {
+            return Task::none();
+        };
+        let current_word = text::slice(&doc.lines(), correction.issue.start, correction.issue.end);
+        if doc.spell_revision != correction.revision || current_word != correction.issue.word {
+            self.set_status("text changed before the correction could be applied");
+            return view::editor::focus(self.active);
+        }
+
+        doc.replace_span(
+            correction.issue.start,
+            correction.issue.end,
+            replacement.clone(),
+        );
+        doc.refresh_modified();
+        doc.invalidate_spelling(self.config.spell_check && self.spell_dictionary.is_some());
+        self.set_status(format!(
+            "replaced {} with {replacement}",
+            correction.issue.word
+        ));
+        view::editor::focus(correction.doc_id)
+    }
+
+    fn add_spell_word(&mut self) -> Task<Message> {
+        let Some(correction) = self.spell_correction.take() else {
+            return Task::none();
+        };
+        let word = correction.issue.word;
+        let Some(dictionary) = self.spell_dictionary.clone() else {
+            self.set_status("spell dictionary unavailable");
+            return view::editor::focus(self.active);
+        };
+        let path = match core::spell::personal_dictionary_path(&self.config.spell_language) {
+            Ok(path) => path,
+            Err(error) => {
+                self.set_status(format!("could not add {word}: {error}"));
+                return view::editor::focus(self.active);
+            }
+        };
+        let load_revision = self.spell_load_revision;
+        let saved_word = word.clone();
+        let save = Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let mut dictionary = dictionary
+                        .write()
+                        .map_err(|_| "spell dictionary lock is poisoned".to_string())?;
+                    core::spell::save_personal_word(&path, &saved_word)?;
+                    dictionary
+                        .add(&saved_word)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .unwrap_or_else(|error| Err(format!("personal dictionary task failed: {error}")))
+            },
+            move |result| Message::SpellWordSaved(load_revision, word, result),
+        );
+        Task::batch([save, view::editor::focus(self.active)])
     }
 
     /// Start (or continue) a typewriter-centering animation after a cursor move
@@ -798,7 +1151,10 @@ impl App {
             return;
         };
         self.active_doc_mut().content.move_to(text_editor::Cursor {
-            position: text_editor::Position { line: end.0, column: end.1 },
+            position: text_editor::Position {
+                line: end.0,
+                column: end.1,
+            },
             selection: Some(text_editor::Position {
                 line: start.0,
                 column: start.1,
@@ -892,6 +1248,18 @@ impl App {
                 });
                 view::editor::focus(self.active)
             }
+            Command::Spelling => {
+                self.config.spell_check = !self.config.spell_check;
+                self.save_config();
+                self.menu = None;
+                self.set_status(if self.config.spell_check {
+                    "spell checking on"
+                } else {
+                    "spell checking off"
+                });
+                let load = self.load_spell_dictionary();
+                Task::batch([load, view::editor::focus(self.active)])
+            }
             Command::Help => {
                 self.menu = Some(Menu::Help);
                 Task::none()
@@ -915,7 +1283,10 @@ impl App {
         };
         let mut files = vec![dir.join("config.toml")];
         if !self.config.theme.is_empty() {
-            files.push(dir.join("themes").join(format!("{}.toml", self.config.theme)));
+            files.push(
+                dir.join("themes")
+                    .join(format!("{}.toml", self.config.theme)),
+            );
         }
         files
     }
@@ -933,16 +1304,21 @@ impl App {
     /// Re-read config and theme from disk when their files change on disk.
     /// Skipped while the command bar is open so it can't clobber the live
     /// theme/font preview the user is arrowing through.
-    fn poll_config(&mut self) {
+    fn poll_config(&mut self) -> Task<Message> {
         if self.menu.is_some() {
-            return;
+            return Task::none();
         }
         let sig = self.config_signature();
         if sig == self.config_sig {
-            return;
+            return Task::none();
         }
         self.config_sig = sig;
 
+        let old_spell = (
+            self.config.spell_check,
+            self.config.spell_language.clone(),
+            self.config.spell_dictionary.clone(),
+        );
         let (config, warning) = Config::load();
         self.config = config;
         self.theme = self.config.load_theme().0;
@@ -953,6 +1329,16 @@ impl App {
         // A theme name change means a different file to watch.
         self.config_sig = self.config_signature();
         self.set_status(warning.unwrap_or_else(|| "config reloaded".to_string()));
+        let new_spell = (
+            self.config.spell_check,
+            self.config.spell_language.clone(),
+            self.config.spell_dictionary.clone(),
+        );
+        if old_spell != new_spell {
+            self.load_spell_dictionary()
+        } else {
+            Task::none()
+        }
     }
 
     /// The one place focus moves: records the focused pane and, when it is an
@@ -995,9 +1381,7 @@ impl App {
     /// drops its document. The last editor never closes — there must always be
     /// a document to edit.
     fn close_pane(&mut self, pane: pane_grid::Pane) {
-        if matches!(self.panes.get(pane), Some(PaneKind::Editor(_)))
-            && self.editor_count() <= 1
-        {
+        if matches!(self.panes.get(pane), Some(PaneKind::Editor(_))) && self.editor_count() <= 1 {
             return;
         }
         if let Some((kind, sibling)) = self.panes.close(pane) {
@@ -1070,7 +1454,8 @@ impl App {
             return view::editor::focus(self.active);
         }
 
-        let doc = Document::open(path);
+        let mut doc = Document::open(path);
+        doc.invalidate_spelling(self.config.spell_check && self.spell_dictionary.is_some());
         let name = doc.display_name();
 
         // Reuse the active pane if it holds a pristine scratch buffer (a fresh
@@ -1089,6 +1474,165 @@ impl App {
         self.spawn_editor(id);
         self.set_status(format!("opened {name}"));
         view::editor::focus(self.active)
+    }
+
+    fn change_directory(&mut self, path: PathBuf) {
+        match self.sidebar.set_root(path) {
+            Ok(()) => self.set_status(format!(
+                "current directory: {}",
+                self.sidebar.root.display()
+            )),
+            Err(e) => self.set_status(format!("could not open folder: {e}")),
+        }
+    }
+
+    fn begin_sidebar_context(&mut self, mode: ContextMode) -> Task<Message> {
+        let Some(context) = self.sidebar.context.as_mut() else {
+            return Task::none();
+        };
+        context.mode = mode;
+        context.input = if mode == ContextMode::Rename {
+            context
+                .target
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        sidebar::focus_context_input()
+    }
+
+    fn submit_sidebar_context(&mut self) -> Task<Message> {
+        let Some(context) = self.sidebar.context.as_ref() else {
+            return Task::none();
+        };
+        let mode = context.mode;
+        let target = context.target.clone();
+        let target_is_dir = context.is_dir;
+        let input = context.input.clone();
+
+        let result = match mode {
+            ContextMode::CreateFile | ContextMode::CreateFolder => {
+                let parent = if target_is_dir {
+                    target.as_path()
+                } else {
+                    target.parent().unwrap_or(&self.sidebar.root)
+                };
+                sidebar::child_path(parent, &input).and_then(|path| {
+                    if mode == ContextMode::CreateFile {
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .open(&path)
+                            .map(|_| path)
+                            .map_err(|e| e.to_string())
+                    } else {
+                        std::fs::create_dir(&path)
+                            .map(|_| path)
+                            .map_err(|e| e.to_string())
+                    }
+                })
+            }
+            ContextMode::Rename => self.rename_sidebar_target(&target, &input),
+            ContextMode::Menu | ContextMode::ConfirmDelete => return Task::none(),
+        };
+
+        match result {
+            Ok(path) => {
+                self.sidebar.close_context();
+                self.sidebar.rebuild();
+                if mode == ContextMode::CreateFile {
+                    self.set_status(format!("created {}", path.display()));
+                    self.open_file(path)
+                } else {
+                    self.set_status(if mode == ContextMode::CreateFolder {
+                        format!("created folder {}", path.display())
+                    } else {
+                        format!("renamed to {}", path.display())
+                    });
+                    view::editor::focus(self.active)
+                }
+            }
+            Err(e) => {
+                self.set_status(format!("filesystem action failed: {e}"));
+                sidebar::focus_context_input()
+            }
+        }
+    }
+
+    fn rename_sidebar_target(
+        &mut self,
+        target: &std::path::Path,
+        name: &str,
+    ) -> Result<PathBuf, String> {
+        let source = std::fs::canonicalize(target).map_err(|e| e.to_string())?;
+        let parent = source.parent().ok_or("cannot rename this path")?;
+        let destination = sidebar::child_path(parent, name)?;
+        if destination == source {
+            return Ok(destination);
+        }
+        if destination.exists() {
+            return Err(format!("{} already exists", destination.display()));
+        }
+
+        let remapped: Vec<(DocId, PathBuf)> = self
+            .docs
+            .iter()
+            .filter_map(|(id, doc)| {
+                let path = doc.path.as_deref()?;
+                let canonical = std::fs::canonicalize(path).ok()?;
+                sidebar::remap_descendant(&canonical, &source, &destination)
+                    .map(|new_path| (*id, new_path))
+            })
+            .collect();
+
+        std::fs::rename(&source, &destination).map_err(|e| e.to_string())?;
+        for (id, path) in remapped {
+            if let Some(doc) = self.docs.get_mut(&id) {
+                doc.path = Some(path);
+            }
+        }
+        Ok(destination)
+    }
+
+    fn delete_sidebar_target(&mut self) {
+        let Some(context) = self.sidebar.context.as_ref() else {
+            return;
+        };
+        let target = context.target.clone();
+        let is_dir = context.is_dir;
+        let canonical = match std::fs::canonicalize(&target) {
+            Ok(path) => path,
+            Err(e) => {
+                self.set_status(format!("delete failed: {e}"));
+                return;
+            }
+        };
+        let contains_open_document = self.docs.values().any(|doc| {
+            doc.path
+                .as_deref()
+                .and_then(|path| std::fs::canonicalize(path).ok())
+                .is_some_and(|path| path.strip_prefix(&canonical).is_ok())
+        });
+        if contains_open_document {
+            self.set_status("close files inside this path before deleting it");
+            return;
+        }
+
+        let result = if is_dir {
+            std::fs::remove_dir_all(&canonical)
+        } else {
+            std::fs::remove_file(&canonical)
+        };
+        match result {
+            Ok(()) => {
+                self.sidebar.close_context();
+                self.sidebar.rebuild();
+                self.set_status(format!("deleted {}", canonical.display()));
+            }
+            Err(e) => self.set_status(format!("delete failed: {e}")),
+        }
     }
 
     /// Put the already-inserted document `id` in a new editor pane (splitting
@@ -1131,8 +1675,7 @@ impl App {
             FileKind::Plain => Task::none(),
             FileKind::Markdown => {
                 let text = self.active_doc().content.text();
-                self.active_doc_mut().preview =
-                    Preview::Markdown(markdown::Content::parse(&text));
+                self.active_doc_mut().preview = Preview::Markdown(markdown::Content::parse(&text));
                 Task::none()
             }
             FileKind::Latex => {
@@ -1147,9 +1690,8 @@ impl App {
                     async move {
                         let result: Result<Vec<PdfPage>, String> =
                             tokio::task::spawn_blocking(move || {
-                                core::latex::compile(&compiler, &path).map(|pages| {
-                                    pages.into_iter().map(to_page).collect::<Vec<_>>()
-                                })
+                                core::latex::compile(&compiler, &path)
+                                    .map(|pages| pages.into_iter().map(to_page).collect::<Vec<_>>())
                             })
                             .await
                             .unwrap_or_else(|e| Err(e.to_string()));
@@ -1167,18 +1709,28 @@ impl App {
         // reverting edits clears it (see `Document::refresh_modified`). Bare
         // cursor moves / scrolls / clicks don't change text, so they skip the
         // (whole-buffer) comparison.
-        let recompute = match &message {
-            Message::Edit(_, action) => matches!(action, text_editor::Action::Edit(_)),
+        let changed_doc = match &message {
+            Message::Edit(id, action)
+                if matches!(action, text_editor::Action::Edit(_))
+                    || self.docs.get(id).is_some_and(|doc| doc.phantom.is_some()) =>
+            {
+                Some(*id)
+            }
             Message::Undo
             | Message::Redo
             | Message::DeleteSentence
             | Message::DeleteWord
-            | Message::PhantomAccept => true,
-            _ => false,
+            | Message::PhantomAccept
+            | Message::Save => Some(self.active),
+            _ => None,
         };
         let task = self.update_inner(message);
-        if recompute {
-            self.active_doc_mut().refresh_modified();
+        if let Some(id) = changed_doc {
+            let enabled = self.config.spell_check && self.spell_dictionary.is_some();
+            if let Some(doc) = self.docs.get_mut(&id) {
+                doc.refresh_modified();
+                doc.invalidate_spelling(enabled);
+            }
         }
         task
     }
@@ -1219,9 +1771,8 @@ impl App {
                                 // Match: step over the ghost char (it stays in
                                 // the buffer, now solid) without inserting.
                                 let rest = rem[c.len_utf8()..].to_string();
-                                doc.content.perform(text_editor::Action::Move(
-                                    text_editor::Motion::Right,
-                                ));
+                                doc.content
+                                    .perform(text_editor::Action::Move(text_editor::Motion::Right));
                                 doc.phantom = (!rest.is_empty()).then_some(rest);
                                 doc.modified = true;
                             } else {
@@ -1380,6 +1931,125 @@ impl App {
                 Task::none()
             }
 
+            Message::SpellDictionaryLoaded(load_revision, result) => {
+                if load_revision != self.spell_load_revision || !self.config.spell_check {
+                    return Task::none();
+                }
+                self.spell_loading = false;
+                match result {
+                    Ok(loaded) => {
+                        let name = loaded
+                            .aff_path
+                            .file_stem()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| self.config.spell_language.clone());
+                        self.spell_dictionary = Some(loaded.dictionary);
+                        self.mark_all_spelling_dirty();
+                        self.set_status(format!("spell checking ready ({name})"));
+                    }
+                    Err(error) => {
+                        self.spell_dictionary = None;
+                        self.set_status(format!("spell checking unavailable: {error}"));
+                    }
+                }
+                Task::none()
+            }
+            Message::SpellTick => self.start_spell_check(),
+            Message::SpellChecked(id, revision, issues) => {
+                if let Some(doc) = self.docs.get_mut(&id) {
+                    doc.spell_in_flight = false;
+                    if self.config.spell_check
+                        && doc.spell_revision == revision
+                        && doc.phantom.is_none()
+                    {
+                        doc.spell_issues = issues;
+                    }
+                }
+                Task::none()
+            }
+            Message::OpenSpellCorrection => self.open_spell_correction(),
+            Message::SpellSuggestions(id, revision, suggestions) => {
+                let revision_is_current = self
+                    .docs
+                    .get(&id)
+                    .is_some_and(|doc| doc.spell_revision == revision);
+                if revision_is_current
+                    && let Some(correction) = self.spell_correction.as_mut()
+                    && correction.doc_id == id
+                    && correction.revision == revision
+                {
+                    let untouched = correction.input == correction.issue.word;
+                    correction.suggestions = suggestions;
+                    correction.selected = 0;
+                    correction.loading = false;
+                    if untouched && let Some(first) = correction.suggestions.first() {
+                        correction.input = first.clone();
+                    }
+                }
+                Task::none()
+            }
+            Message::SpellCorrectionInput(input) => {
+                if let Some(correction) = self.spell_correction.as_mut() {
+                    correction.input = input;
+                }
+                Task::none()
+            }
+            Message::SpellCorrectionPrev | Message::SpellCorrectionNext => {
+                if let Some(correction) = self.spell_correction.as_mut() {
+                    let len = correction.suggestions.len();
+                    if len > 0 {
+                        let step = if matches!(message, Message::SpellCorrectionNext) {
+                            1
+                        } else {
+                            -1
+                        };
+                        correction.selected =
+                            (correction.selected as isize + step).rem_euclid(len as isize) as usize;
+                        correction.input = correction.suggestions[correction.selected].clone();
+                    }
+                }
+                Task::none()
+            }
+            Message::SpellCorrectionSubmit => {
+                let replacement = self
+                    .spell_correction
+                    .as_ref()
+                    .map(|correction| correction.input.clone())
+                    .unwrap_or_default();
+                self.apply_spell_correction(replacement)
+            }
+            Message::SpellCorrectionApply(replacement) => self.apply_spell_correction(replacement),
+            Message::SpellCorrectionIgnore => {
+                if let Some(correction) = self.spell_correction.take()
+                    && let Some(doc) = self.docs.get_mut(&correction.doc_id)
+                    && doc.spell_revision == correction.revision
+                {
+                    doc.spell_issues.retain(|issue| issue != &correction.issue);
+                }
+                view::editor::focus(self.active)
+            }
+            Message::AddSpellWord => self.add_spell_word(),
+            Message::SpellWordSaved(load_revision, word, result) => {
+                match result {
+                    Ok(()) => {
+                        self.set_status(format!("added {word} to personal dictionary"));
+                        if load_revision == self.spell_load_revision {
+                            self.mark_all_spelling_dirty();
+                        } else {
+                            return self.load_spell_dictionary();
+                        }
+                    }
+                    Err(error) => {
+                        self.set_status(format!("could not add {word}: {error}"));
+                    }
+                }
+                Task::none()
+            }
+            Message::CloseSpellCorrection => {
+                self.spell_correction = None;
+                view::editor::focus(self.active)
+            }
+
             Message::Compiled(id, result) => {
                 let Some(doc) = self.docs.get_mut(&id) else {
                     return Task::none();
@@ -1435,7 +2105,12 @@ impl App {
                 // Re-assert editor focus so the caret is visible on launch (and
                 // after alt-tabbing back). Skip it while an overlay owns the
                 // keyboard, or the active pane isn't an editor.
-                if self.menu.is_some() || self.search.is_some() || self.confirm.is_some()
+                if self.menu.is_some()
+                    || self.search.is_some()
+                    || self.spell_correction.is_some()
+                    || self.confirm.is_some()
+                    || self.open_picker
+                    || self.sidebar.context_is_editing()
                 {
                     return Task::none();
                 }
@@ -1516,6 +2191,15 @@ impl App {
                 // then opens the command bar.
                 if self.confirm.is_some() {
                     self.confirm = None;
+                } else if self.spell_correction.is_some() {
+                    self.spell_correction = None;
+                    return view::editor::focus(self.active);
+                } else if self.open_picker {
+                    self.open_picker = false;
+                    return view::editor::focus(self.active);
+                } else if self.sidebar.context.is_some() {
+                    self.sidebar.close_context();
+                    return view::editor::focus(self.active);
                 } else if self.active_doc().compile_error.is_some() {
                     self.active_doc_mut().compile_error = None;
                 } else if self.search.is_some() {
@@ -1689,10 +2373,50 @@ impl App {
             }
 
             Message::ToggleDir(path) => {
+                self.sidebar.close_context();
                 self.sidebar.toggle(path);
                 Task::none()
             }
-            Message::OpenFile(path) => self.open_file(path),
+            Message::ChangeDirectory(path) => {
+                self.change_directory(path);
+                Task::none()
+            }
+            Message::OpenFile(path) => {
+                self.sidebar.close_context();
+                self.open_file(path)
+            }
+            Message::OpenSidebarContext(path, is_dir) => {
+                self.sidebar.open_context(path, is_dir);
+                Task::none()
+            }
+            Message::CloseSidebarContext => {
+                self.sidebar.close_context();
+                view::editor::focus(self.active)
+            }
+            Message::SidebarContextCreateFile => {
+                self.begin_sidebar_context(ContextMode::CreateFile)
+            }
+            Message::SidebarContextCreateFolder => {
+                self.begin_sidebar_context(ContextMode::CreateFolder)
+            }
+            Message::SidebarContextRename => self.begin_sidebar_context(ContextMode::Rename),
+            Message::SidebarContextDelete => {
+                if let Some(context) = self.sidebar.context.as_mut() {
+                    context.mode = ContextMode::ConfirmDelete;
+                }
+                Task::none()
+            }
+            Message::SidebarContextConfirmDelete => {
+                self.delete_sidebar_target();
+                Task::none()
+            }
+            Message::SidebarContextInput(input) => {
+                if let Some(context) = self.sidebar.context.as_mut() {
+                    context.input = input;
+                }
+                Task::none()
+            }
+            Message::SidebarContextSubmit => self.submit_sidebar_context(),
             Message::NewFileInput(input) => {
                 self.sidebar.new_file = input;
                 Task::none()
@@ -1703,7 +2427,13 @@ impl App {
                     return Task::none();
                 }
                 self.sidebar.new_file.clear();
-                let path = self.sidebar.root.join(&name);
+                let path = match sidebar::child_path(&self.sidebar.root, &name) {
+                    Ok(path) => path,
+                    Err(e) => {
+                        self.set_status(e);
+                        return Task::none();
+                    }
+                };
                 if self.active_doc().path.is_none() {
                     // Untitled buffer: keep its contents, just give it a name.
                     let doc = self.active_doc_mut();
@@ -1735,19 +2465,53 @@ impl App {
                 self.set_status("new file");
                 view::editor::focus(self.active)
             }
-            Message::OpenFilePicker => Task::perform(
-                async {
-                    rfd::AsyncFileDialog::new()
-                        .pick_file()
-                        .await
-                        .map(|h| h.path().to_path_buf())
-                },
-                Message::FilePicked,
-            ),
+            Message::OpenFilePicker => {
+                self.sidebar.close_context();
+                self.open_picker = true;
+                Task::none()
+            }
+            Message::ChooseFileToOpen => {
+                self.open_picker = false;
+                let root = self.sidebar.root.clone();
+                Task::perform(
+                    async move {
+                        rfd::AsyncFileDialog::new()
+                            .set_directory(root)
+                            .pick_file()
+                            .await
+                            .map(|h| h.path().to_path_buf())
+                    },
+                    Message::FilePicked,
+                )
+            }
+            Message::ChooseFolderToOpen => {
+                self.open_picker = false;
+                let root = self.sidebar.root.clone();
+                Task::perform(
+                    async move {
+                        rfd::AsyncFileDialog::new()
+                            .set_directory(root)
+                            .pick_folder()
+                            .await
+                            .map(|h| h.path().to_path_buf())
+                    },
+                    Message::FolderPicked,
+                )
+            }
+            Message::CloseOpenPicker => {
+                self.open_picker = false;
+                view::editor::focus(self.active)
+            }
             Message::FilePicked(picked) => match picked {
                 Some(path) => self.open_file(path),
                 None => Task::none(),
             },
+            Message::FolderPicked(picked) => {
+                if let Some(path) = picked {
+                    self.change_directory(path);
+                }
+                Task::none()
+            }
             Message::CloseActivePane => self.update(Message::ClosePane(self.focused)),
             Message::NextPane => self.cycle_pane(1),
             Message::PrevPane => self.cycle_pane(-1),
@@ -1755,7 +2519,11 @@ impl App {
                 if self.search.take().is_some() {
                     // Second CTRL+F closes the bar and returns to the editor.
                     view::editor::focus(self.active)
-                } else if self.menu.is_some() || self.confirm.is_some() {
+                } else if self.menu.is_some()
+                    || self.spell_correction.is_some()
+                    || self.confirm.is_some()
+                    || self.open_picker
+                {
                     Task::none() // don't pop find over a modal
                 } else {
                     let origin = self.active_doc().cursor_pos();
@@ -1854,8 +2622,7 @@ impl App {
                 {
                     self.status = None;
                 }
-                self.poll_config();
-                Task::none()
+                self.poll_config()
             }
         }
     }
@@ -1867,5 +2634,44 @@ fn to_page(img: ::image::DynamicImage) -> PdfPage {
     PdfPage {
         aspect: h as f32 / w as f32,
         handle: image::Handle::from_rgba(w, h, rgba.into_raw()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Document;
+    use crate::core::spell::SpellIssue;
+    use crate::view::widget::text_editor;
+
+    #[test]
+    fn spelling_correction_is_one_undoable_edit() {
+        let mut doc = Document::untitled();
+        doc.content = text_editor::Content::with_text("hello wurld");
+        doc.replace_span((0, 6), (0, 11), "world".to_string());
+        assert_eq!(doc.content.text(), "hello world");
+
+        let current = doc.snapshot();
+        let previous = doc.history.undo(current).unwrap();
+        doc.restore(previous);
+        assert_eq!(doc.content.text(), "hello wurld");
+    }
+
+    #[test]
+    fn spelling_invalidation_clears_stale_spans_and_waits_for_phantoms() {
+        let mut doc = Document::untitled();
+        doc.spell_issues.push(SpellIssue {
+            start: (0, 0),
+            end: (0, 5),
+            word: "wurld".to_string(),
+        });
+        let revision = doc.spell_revision;
+        doc.invalidate_spelling(true);
+        assert!(doc.spell_issues.is_empty());
+        assert_ne!(doc.spell_revision, revision);
+        assert!(doc.spell_dirty_since.is_some());
+
+        doc.phantom = Some("ghost".to_string());
+        doc.invalidate_spelling(true);
+        assert!(doc.spell_dirty_since.is_none());
     }
 }
