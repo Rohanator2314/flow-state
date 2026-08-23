@@ -1,0 +1,55 @@
+# Krepko Dark — halloy theme format.
+# Based on the Krepko corporate visual system; tuned independently for dark UI.
+
+[general]
+background = "#171d27"        # surface-raised
+horizontal_rule = "#ffffff1a" # border-subtle (10%)
+scrollbar = "#3b4557"
+unread_indicator = "#afc6ff"  # brand-primary
+highlight_indicator = "#f3c66d"
+border = "#ffffff1a"          # border-subtle (10%)
+
+[text]
+primary = "#f6f7fa"   # text-primary
+secondary = "#b6bdca" # text-secondary
+tertiary = "#afc6ff"  # brand-primary
+success = "#6dd6a7"
+error = "#ff9b8f"
+warning = "#f3c66d"
+info = "#afc6ff"
+
+[buffer]
+background = "#0d1117"            # surface-canvas
+background_text_input = "#202735" # surface-subtle
+background_title_bar = "#171d27"  # surface-raised
+border = "#ffffff1a"
+border_selected = "#afc6ff"       # brand-primary
+highlight = "#202735"             # surface-subtle
+selection = "#7fa3f529"           # brand-subtle (16%)
+timestamp = "#b6bdca"
+url = "#afc6ff"
+
+[buttons.primary]
+background = "#7fa3f5"            # brand-strong
+background_hover = "#afc6ff"
+background_selected = "#668ce6"
+background_selected_hover = "#7fa3f5"
+
+[buttons.secondary]
+background = "#202735"
+background_hover = "#293244"
+background_selected = "#344055"
+background_selected_hover = "#3e4b62"
+
+[formatting]
+white = "#f6f7fa"
+black = "#0d1117"
+blue = "#afc6ff"
+green = "#6dd6a7"
+red = "#ff9b8f"
+magenta = "#d8a7f0"
+orange = "#f3a76f"
+yellow = "#f3c66d"
+cyan = "#75d4dc"
+pink = "#f0a4cc"
+grey = "#b6bdca"

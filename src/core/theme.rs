@@ -265,6 +265,32 @@ mod tests {
     }
 
     #[test]
+    fn loads_krepko_light_theme() {
+        let theme = Theme::load(Path::new("themes/krepko-light.toml")).unwrap();
+        assert_eq!(theme.background, rgb(0xffffff));
+        assert_eq!(theme.surface, rgb(0xf0f2f7));
+        assert_eq!(theme.text, rgb(0x0d1117));
+        assert_eq!(theme.text_inactive, rgb(0x5a6070));
+        assert_eq!(theme.accent, rgb(0x002060));
+        assert_eq!(theme.success, rgb(0x16724a));
+        assert_eq!(theme.warning, rgb(0x8a5700));
+        assert_eq!(theme.danger, rgb(0xb42318));
+    }
+
+    #[test]
+    fn loads_krepko_dark_theme() {
+        let theme = Theme::load(Path::new("themes/krepko-dark.toml")).unwrap();
+        assert_eq!(theme.background, rgb(0x0d1117));
+        assert_eq!(theme.surface, rgb(0x171d27));
+        assert_eq!(theme.text, rgb(0xf6f7fa));
+        assert_eq!(theme.text_inactive, rgb(0xb6bdca));
+        assert_eq!(theme.accent, rgb(0xafc6ff));
+        assert_eq!(theme.success, rgb(0x6dd6a7));
+        assert_eq!(theme.warning, rgb(0xf3c66d));
+        assert_eq!(theme.danger, rgb(0xff9b8f));
+    }
+
+    #[test]
     fn hex_parses_rgb_and_rgba() {
         assert_eq!(hex_to_color("#010203"), Some(Color::from_rgb8(1, 2, 3)));
         assert_eq!(
