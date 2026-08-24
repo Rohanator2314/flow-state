@@ -1,13 +1,11 @@
 name: Build
 
 on:
-  pull_request:
-  push:
-    branches: [main]
-  workflow_dispatch:
+  release:
+    types: [published]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -22,16 +20,19 @@ jobs:
             os: macos-15
             target: aarch64-apple-darwin
             artifact: flow-state-macos-arm64
+            asset: flow-state-macos-arm64.tar.gz
 
           - name: Linux x64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: flow-state-linux-x64
+            asset: flow-state-linux-x64.tar.gz
 
           - name: Windows x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: flow-state-windows-x64
+            asset: flow-state-windows-x64.zip
 
     steps:
       - name: Check out repository
@@ -63,10 +64,7 @@ jobs:
             -Path "target\${{ matrix.target }}\release\flow-state.exe" `
             -DestinationPath "${{ matrix.artifact }}.zip"
 
-      - name: Upload build
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}.*
-          if-no-files-found: error
-          retention-days: 1
+      - name: Upload build to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ matrix.asset }}" --clobber
