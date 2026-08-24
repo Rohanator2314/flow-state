@@ -30,7 +30,7 @@ use crate::view::widget::text_editor::{
 use iced::widget::{container, mouse_area, stack};
 use iced::{Background, Border, Color, Element, Fill, Padding, Rectangle, Task};
 
-use crate::app::{App, DocId, Message};
+use crate::app::{App, DocId, Message, SelectionMessage};
 use crate::core::text::{self, Pos};
 use crate::core::center;
 use crate::view::{decoration, selection_menu};
@@ -90,8 +90,8 @@ pub fn focus(id: DocId) -> Task<Message> {
 /// inactive paragraphs; other panes show their full text.
 pub fn view(app: &App, id: DocId) -> Element<'_, Message> {
     let theme = &app.theme;
-    let doc = &app.docs[&id];
-    let is_active = id == app.active;
+    let doc = &app.workspace.documents[&id];
+    let is_active = id == app.workspace.active;
     // Dimming makes a selection that spans paragraphs hard to read, so it is
     // suspended while anything is selected (or turned off in the config), and
     // it only applies to the focused document.
@@ -154,14 +154,14 @@ pub fn view(app: &App, id: DocId) -> Element<'_, Message> {
     //   - the emphasis underline (CTRL/SHIFT), over the glyphs;
     //   - the active-paragraph glow (opt-in), behind them.
     let glow = (is_active && app.config.paragraph_glow).then(|| app.active_paragraph());
-    let decorations = if emphasis.is_some() || glow.is_some() || !doc.spell_issues.is_empty() {
+    let decorations = if emphasis.is_some() || glow.is_some() || !doc.spell_issues().is_empty() {
         doc.content.with_buffer(|buffer| {
             let mut quads = Vec::new();
             let spelling = Color {
                 a: 0.82,
                 ..theme.warning
             };
-            for issue in &doc.spell_issues {
+            for issue in doc.spell_issues() {
                 quads.extend(underline_quads(buffer, issue.start, issue.end, spelling));
             }
             if let Some((start, end)) = emphasis {
@@ -180,7 +180,9 @@ pub fn view(app: &App, id: DocId) -> Element<'_, Message> {
     let editor: Element<'_, Message> = TextEditor::new(&doc.content)
         .id(editor_id(id))
         .on_action(move |action| Message::Edit(id, action))
-        .on_context_menu(move |position, bounds| Message::OpenSelectionMenu(id, position, bounds))
+        .on_context_menu(move |position, bounds| {
+            Message::Selection(SelectionMessage::Open(id, position, bounds))
+        })
         .key_binding(key_binding)
         .decorations(decorations)
         .highlight_with::<DimHighlighter>(settings, |highlight, _theme| Format {
@@ -208,7 +210,11 @@ pub fn view(app: &App, id: DocId) -> Element<'_, Message> {
         .into();
 
     let mut layers = vec![editor];
-    if let Some(menu) = app.selection_menu.as_ref().filter(|menu| menu.doc_id == id) {
+    if let Some(menu) = app
+        .ui.selection_menu
+        .as_ref()
+        .filter(|menu| menu.target.document() == id)
+    {
         layers.push(
             mouse_area(
                 container(selection_menu::view(app))
@@ -221,7 +227,7 @@ pub fn view(app: &App, id: DocId) -> Element<'_, Message> {
                         left: menu.position.x,
                     }),
             )
-                .on_press(Message::CloseSelectionMenu)
+                .on_press(Message::Selection(SelectionMessage::Close))
                 .into(),
         );
     }
@@ -364,7 +370,7 @@ pub struct DimSettings {
     /// Inclusive line range of the active paragraph.
     pub active: (usize, usize),
     pub dim: Color,
-    /// [`Document::generation`](crate::app::Document): changes on undo/redo
+    /// [`Document::generation`](crate::document::Document): changes on undo/redo
     /// (whole-content swaps) to force a re-highlight even when the active
     /// range happens to be identical.
     pub generation: usize,

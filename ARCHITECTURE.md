@@ -12,30 +12,22 @@ stateless `view(&App) -> Element<Message>`. Slow work (LaTeX compiles) runs
 off-thread via `Task::perform` and returns as a message.
 
 ```
-            main.rs — iced::application(boot, update, view)
-                         .subscription (window close, status TTL tick)
-                  │
-                  ▼
-            app.rs ────────────────────────────────────────────┐
-            │ App: docs: BTreeMap<DocId, Document>,            │
-            │ active (focused doc), pane_grid::State, Sidebar  │
-            │ update(Message) = the only place state changes   │
-            └──────┬────────────────────────────┬──────────────┘
-                   │ uses                       │ rendered by
-                   ▼                            ▼
-            core/ (UI-free, tested)       view/ (stateless)
-            ├ text.rs    paragraphs,      ├ mod.rs       layout, status bar
-            │            sentence scan    ├ sidebar.rs   directory tree
-            ├ undo.rs    snapshot history ├ editor.rs    builds the editor
-            ├ latex.rs   pdflatex→pdftoppm│              widget; keymap, dim hl,
-            ├ center.rs  centering math   │              decorations, centering
-            ├ theme.rs   halloy TOML→Color├ decoration.rs span→rect geometry
-            ├ fonts.rs   system font list ├ widget/      forked text_editor
-            └ config.rs  config.toml      │              (vendored, extended)
-                                          ├ preview.rs   markdown / PDF pages
-                                          ├ dialogs.rs   modals
-                                          ├ menu.rs      ESC command bar
-                                          └ style.rs     halloy widget styles
+main.rs — iced::application(boot, update, view)
+  └── App — root coordinator and Task orchestration
+      ├── Workspace — documents, panes, focus, fullscreen
+      │   └── Document — content, history, preview, phantom, spelling
+      ├── UiState — menus, search, dialogs, transient status
+      ├── Sidebar
+      ├── TextSelection — validated document/span snapshot
+      ├── core/ — UI-free algorithms and external processors
+      │   ├── text / undo / center / spell
+      │   ├── latex / fonts
+      │   └── config / theme
+      └── view/ — stateless rendering
+          ├── editor / preview / sidebar
+          ├── search / spell / selection menu
+          ├── dialogs / command menu / styles
+          └── widget/ — vendored, extended text editor
 ```
 
 ## Design rules
@@ -43,28 +35,35 @@ off-thread via `Task::perform` and returns as a message.
 - **`core/` is UI-free.** Pure functions (or filesystem/subprocess at most),
   no widget or app-state knowledge, and it carries the unit-test suite. The
   one iced type allowed is `iced::Color` (what theme resolution produces).
+- **Aggregates own their invariants.** `Workspace` owns the document/pane/focus
+  relationship, `Document` owns editor history/phantom/spelling mutation, and
+  `TextSelection` owns a validated byte span. `App` coordinates these objects
+  and iced tasks instead of duplicating their internal rules.
+- **Transient UI state is grouped.** `UiState` owns menus, search/correction
+  overlays, confirmations, and status messages. Intent methods close
+  conflicting surfaces when a new editor overlay opens.
 - **Many documents, one keyed by pane.** Each open file is a `Document`
   (with its own content, undo history, and rendered `Preview`) stored in
-  `App::docs` under a monotonic `DocId`; each `PaneKind::Editor(DocId)` pane
-  renders one. `App::active` is the focused document — opening a file splits
+  `Workspace::documents` under a monotonic `DocId`; each `PaneKind::Editor(DocId)` pane
+  renders one. `Workspace::active` is the focused document — opening a file splits
   the active editor into a new pane (`open_file`/`spawn_editor`), and the
   single preview pane, status bar, and paragraph dimming all read the active
   document.
-- **Focus moves through one door.** `App::set_focus(pane)` is the only place
+- **Focus moves through one door.** `Workspace::focus(pane)` is the place
   `focused`/`active` change together: it records the focused pane and, when
   that pane is an editor, makes its document active (focusing the preview
   leaves `active` on the last editor, so the preview keeps showing it). After
   any structural change (close, drag-swap), `validate_panes` re-establishes
   the invariants — every document has a live pane, `active` is a living
   editor, `focused` is a living pane — and drops documents whose pane is
-  gone, so closing a pane is just `panes.close` + validate. The last editor
+  gone, so closing a pane goes through `Workspace::close_pane`. The last editor
   never closes; the preview reopens on the next save.
 - **The editor's text is owned by iced** (`text_editor::Content`), not by us.
   Custom operations (sentence delete, paragraph nav) work by reading lines
   out of the Content, computing a target position with `core::text`, and
   applying it back as a cursor move/selection + edit. Columns are **byte**
   offsets (cosmic-text convention) — `core::text` is written for that.
-- **Undo is ours.** iced has no editor history; `app.rs` records a
+- **Undo is ours.** iced has no editor history; `Document::apply_action` records a
   `core::undo` snapshot before every `Action::Edit` (coalescing typing runs)
   and restores Content + cursor on undo/redo.
 - **Phantoms live inside the Content.** The stock `text_editor` renders only

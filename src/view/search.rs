@@ -28,7 +28,7 @@ pub fn focus_input() -> Task<Message> {
 
 pub fn bar(app: &App) -> Element<'_, Message> {
     let theme = &app.theme;
-    let search = app.search.as_ref().expect("search open");
+    let search = app.ui.search.as_ref().expect("search open");
 
     // Match counter: "3/12", "no matches", or blank for an empty query.
     let count = if search.query.is_empty() {

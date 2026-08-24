@@ -41,7 +41,7 @@ fn backdrop_style(_: &iced::Theme) -> container::Style {
 pub fn confirm(app: &App, pending: &PendingAction) -> Element<'static, Message> {
     let (title, detail) = match pending {
         PendingAction::CloseWindow => {
-            let n = app.docs.values().filter(|d| d.modified).count();
+            let n = app.workspace.documents.values().filter(|d| d.modified).count();
             (
                 "Save changes before closing?".to_string(),
                 if n > 1 {
@@ -52,8 +52,8 @@ pub fn confirm(app: &App, pending: &PendingAction) -> Element<'static, Message> 
             )
         }
         PendingAction::ClosePane(pane) => {
-            let name = match app.panes.get(*pane) {
-                Some(crate::app::PaneKind::Editor(id)) => app.docs[id].display_name(),
+            let name = match app.workspace.panes.get(*pane) {
+                Some(crate::app::PaneKind::Editor(id)) => app.workspace.documents[id].display_name(),
                 _ => "this pane".to_string(),
             };
             (

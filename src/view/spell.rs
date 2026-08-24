@@ -17,7 +17,7 @@ pub fn focus_input() -> Task<Message> {
 pub fn bar(app: &App) -> Element<'_, Message> {
     let theme = &app.theme;
     let correction = app
-        .spell_correction
+        .ui.spell_correction
         .as_ref()
         .expect("spell correction open");
 

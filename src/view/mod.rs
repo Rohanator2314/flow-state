@@ -27,14 +27,14 @@ use iced::border::Radius;
 use iced::widget::{button, center, column, container, pane_grid, row, stack, text};
 use iced::{Background, Border, Color, Element, Fill, Padding};
 
-use crate::app::{App, Message, PaneKind};
+use crate::app::{App, Message, PaneKind, WorkspaceMessage};
 
 /// Gap between panes and around the grid (halloy's inner/outer pane gap).
 const GAP: f32 = 6.0;
 
 pub fn view(app: &App) -> Element<'_, Message> {
     let base = app
-        .fullscreen
+        .workspace.fullscreen
         .and_then(|pane| fullscreen_pane(app, pane))
         .unwrap_or_else(|| workspace(app));
 
@@ -49,7 +49,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     // The find bar is a non-modal overlay (no backdrop) so the matched text
     // stays visible behind it; clicks outside the bar fall through to the
     // editor. Stacked under the modal dialogs below so a dialog still wins.
-    if app.search.is_some() {
+    if app.ui.search.is_some() {
         layers.push(
             container(search::bar(app))
                 .width(Fill)
@@ -60,7 +60,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 .into(),
         );
     }
-    if app.spell_correction.is_some() {
+    if app.ui.spell_correction.is_some() {
         layers.push(
             container(spell::bar(app))
                 .width(Fill)
@@ -72,13 +72,13 @@ pub fn view(app: &App) -> Element<'_, Message> {
         );
     }
 
-    if let Some(pending) = &app.confirm {
+    if let Some(pending) = &app.ui.confirm {
         layers.push(dialogs::modal_layer(dialogs::confirm(app, pending)));
-    } else if app.open_picker {
+    } else if app.ui.open_picker {
         layers.push(dialogs::modal_layer(dialogs::open_picker(app)));
     } else if let Some(error) = &app.active_doc().compile_error {
         layers.push(dialogs::modal_layer(dialogs::compile_error(app, error)));
-    } else if let Some(menu) = &app.menu {
+    } else if let Some(menu) = &app.ui.menu {
         layers.push(dialogs::modal_top_layer(menu::view(app, menu)));
     }
 
@@ -88,8 +88,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
 fn workspace(app: &App) -> Element<'_, Message> {
     let theme = &app.theme;
 
-    let grid = pane_grid(&app.panes, |pane, kind, maximized| {
-        let is_focused = pane == app.focused;
+    let grid = pane_grid(&app.workspace.panes, |pane, kind, maximized| {
+        let is_focused = pane == app.workspace.focused;
         let body: Element<'_, Message> = match kind {
             PaneKind::Editor(id) => editor::view(app, *id),
             PaneKind::Preview => preview::view(app),
@@ -99,9 +99,11 @@ fn workspace(app: &App) -> Element<'_, Message> {
             .title_bar(title_bar(app, *kind, pane, maximized, is_focused))
     })
     .spacing(GAP)
-    .on_click(Message::PaneClicked)
-    .on_drag(Message::PaneDragged)
-    .on_resize(8, Message::PaneResized);
+    .on_click(|pane| Message::Workspace(WorkspaceMessage::PaneClicked(pane)))
+    .on_drag(|event| Message::Workspace(WorkspaceMessage::PaneDragged(event)))
+    .on_resize(8, |event| {
+        Message::Workspace(WorkspaceMessage::PaneResized(event))
+    });
 
     let shell = container(grid)
         .padding(Padding::new(GAP))
@@ -120,7 +122,7 @@ fn workspace(app: &App) -> Element<'_, Message> {
 }
 
 fn fullscreen_pane(app: &App, pane: pane_grid::Pane) -> Option<Element<'_, Message>> {
-    let body = match app.panes.get(pane)? {
+    let body = match app.workspace.panes.get(pane)? {
         PaneKind::Editor(id) => editor::view(app, *id),
         PaneKind::Preview => preview::view(app),
     };
@@ -168,7 +170,7 @@ fn title_bar<'a>(
     let theme = &app.theme;
     let title_text = match kind {
         PaneKind::Editor(id) => {
-            let doc = &app.docs[&id];
+            let doc = &app.workspace.documents[&id];
             let dot = if doc.modified { " ●" } else { "" };
             format!("{}{dot}", doc.display_name())
         }
@@ -182,7 +184,7 @@ fn title_bar<'a>(
     // "▣" (nested square) = restore.
     let mut controls = row![control_button(
         if maximized { "▣" } else { "□" },
-        Message::ToggleMaximize(pane),
+        Message::Workspace(WorkspaceMessage::ToggleMaximize(pane)),
         dim,
         theme,
     )]
@@ -195,7 +197,12 @@ fn title_bar<'a>(
         PaneKind::Editor(_) => app.editor_count() > 1,
     };
     if closable {
-        controls = controls.push(control_button("✕", Message::ClosePane(pane), dim, theme));
+        controls = controls.push(control_button(
+            "✕",
+            Message::Workspace(WorkspaceMessage::ClosePane(pane)),
+            dim,
+            theme,
+        ));
     }
 
     let bar_bg = mix(theme.surface, theme.background);
@@ -207,6 +214,7 @@ fn title_bar<'a>(
             .align_y(iced::Center),
     )
     .controls(pane_grid::Controls::new(controls))
+    .always_show_controls()
     .padding(6)
     .style(move |_| container::Style {
         background: Some(Background::Color(bar_bg)),
@@ -249,7 +257,7 @@ fn fullscreen_button<'a>(
         .padding(2)
         .width(34)
         .height(22)
-        .on_press(Message::ToggleFullscreen(pane))
+        .on_press(Message::Workspace(WorkspaceMessage::ToggleFullscreen(pane)))
         .style(style::bare_button(theme))
 }
 
@@ -271,7 +279,7 @@ fn status_bar(app: &App) -> Element<'_, Message> {
     if doc.compiling {
         left.push_str("   ⟳ compiling…");
     }
-    if let Some((msg, _)) = &app.status {
+    if let Some((msg, _)) = &app.ui.status {
         left.push_str("   ");
         left.push_str(msg);
     }

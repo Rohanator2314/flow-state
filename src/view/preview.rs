@@ -11,7 +11,8 @@
 use iced::widget::{center, column, container, image, markdown, mouse_area, responsive, scrollable, text};
 use iced::{Element, Fill};
 
-use crate::app::{App, Message, Preview};
+use crate::app::{App, Message};
+use crate::document::{PdfPage, Preview};
 use crate::core::FileKind;
 
 /// Vertical gap between stacked PDF pages.
@@ -43,7 +44,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     }
 }
 
-fn pdf<'a>(app: &'a App, pages: &'a [crate::app::PdfPage]) -> Element<'a, Message> {
+fn pdf<'a>(app: &'a App, pages: &'a [PdfPage]) -> Element<'a, Message> {
     let zoom = app.pdf_zoom;
     let ctrl = app.modifiers.control();
 

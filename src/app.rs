@@ -1,8 +1,8 @@
 //! Application state and update logic (Elm architecture).
 //!
-//! [`App`] owns everything mutable: the open [`Document`]s (one per editor
-//! pane), the pane layout, the sidebar, and any open dialog. [`App::update`]
-//! is the single place state changes; [`crate::view`] renders it. Slow work
+//! [`App`] coordinates the [`Workspace`], sidebar, transient [`UiState`], and
+//! external tasks. Each aggregate owns its own invariants; [`App::update`] is
+//! the single event entry point and [`crate::view`] renders it. Slow work
 //! (LaTeX compiles) runs off-thread via [`Task::perform`] and comes back as a
 //! [`Message::Compiled`].
 //!
@@ -11,10 +11,9 @@
 //! ([`App::active`]) — it renders that document's preview, status bar, and
 //! paragraph dimming.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use iced::widget::{image, markdown, pane_grid};
 use iced::{Element, Subscription, Task, Theme, window};
@@ -24,8 +23,12 @@ use crate::view::widget::text_editor;
 use crate::core::config::Config;
 use crate::core::spell::{LoadedDictionary, SpellIssue};
 use crate::core::theme::Theme as FlowTheme;
-use crate::core::undo::{History, Snapshot};
-use crate::core::{self, FileKind, file_kind, text};
+use crate::core::{self, FileKind, text};
+use crate::document::{Document, PdfPage, Preview};
+use crate::selection::{SelectionFormat, SelectionMenu, TextSelection};
+use crate::ui_state::UiState;
+pub use crate::workspace::PaneKind;
+use crate::workspace::{ClosePaneResult, Workspace};
 use crate::view::{
     self,
     sidebar::{self, ContextMode, Sidebar},
@@ -39,61 +42,26 @@ const SPELL_DEBOUNCE: Duration = Duration::from_millis(350);
 /// reused, so a stale id simply finds nothing.
 pub type DocId = usize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelectionFormat {
-    Bold,
-    Italic,
-    Underline,
+#[derive(Debug, Clone)]
+pub enum SelectionMessage {
+    Open(DocId, iced::Point, iced::Size),
+    Close,
+    Copy,
+    Cut,
+    Paste,
+    PasteReady(DocId, String, Option<String>),
+    SpellCorrect,
+    Format(SelectionFormat),
 }
 
 #[derive(Debug, Clone)]
-pub struct SelectionMenu {
-    pub doc_id: DocId,
-    pub position: iced::Point,
-    pub selected: String,
-    start: text::Pos,
-    end: text::Pos,
-}
-
-fn formatted_selection(format: SelectionFormat, selected: &str) -> String {
-    match format {
-        SelectionFormat::Bold => format!("**{selected}**"),
-        SelectionFormat::Italic => format!("*{selected}*"),
-        // CommonMark has no underline syntax; inline HTML is interoperable.
-        SelectionFormat::Underline => format!("<u>{selected}</u>"),
-    }
-}
-
-fn selection_span(
-    lines: &[String],
-    cursor: text_editor::Cursor,
-    selected: &str,
-) -> Option<(text::Pos, text::Pos)> {
-    let selected = selected.replace("\r\n", "\n").replace('\r', "\n");
-    let joined = lines.join("\n");
-    let absolute = |position: text_editor::Position| {
-        lines.iter().take(position.line).map(|line| line.len() + 1).sum::<usize>()
-            + position.column
-    };
-    let anchor = cursor.selection?;
-    let low = absolute(cursor.position).min(absolute(anchor));
-    let high = absolute(cursor.position).max(absolute(anchor));
-    let (start_offset, _) = joined
-        .match_indices(&selected)
-        .find(|(start, value)| *start <= low && start + value.len() >= high)?;
-    let end_offset = start_offset + selected.len();
-    let position = |offset: usize| {
-        let mut base = 0;
-        for (line, value) in lines.iter().enumerate() {
-            if offset <= base + value.len() {
-                return (line, offset - base);
-            }
-            base += value.len() + 1;
-        }
-        let line = lines.len().saturating_sub(1);
-        (line, lines.get(line).map_or(0, String::len))
-    };
-    Some((position(start_offset), position(end_offset)))
+pub enum WorkspaceMessage {
+    PaneDragged(pane_grid::DragEvent),
+    PaneResized(pane_grid::ResizeEvent),
+    PaneClicked(pane_grid::Pane),
+    ToggleMaximize(pane_grid::Pane),
+    ToggleFullscreen(pane_grid::Pane),
+    ClosePane(pane_grid::Pane),
 }
 
 #[derive(Debug, Clone)]
@@ -108,14 +76,7 @@ pub enum Message {
     PhantomAccept,
     NextParagraph,
     PrevParagraph,
-    OpenSelectionMenu(DocId, iced::Point, iced::Size),
-    CloseSelectionMenu,
-    SelectionCopy,
-    SelectionCut,
-    SelectionPaste,
-    SelectionPasteReady(DocId, String, Option<String>),
-    SelectionSpellCorrect,
-    SelectionFormat(SelectionFormat),
+    Selection(SelectionMessage),
     // spell checking/correction
     SpellDictionaryLoaded(u64, Result<LoadedDictionary, String>),
     SpellTick,
@@ -145,12 +106,7 @@ pub enum Message {
     DismissError,
     LinkClicked(markdown::Uri),
     // panes
-    PaneDragged(pane_grid::DragEvent),
-    PaneResized(pane_grid::ResizeEvent),
-    PaneClicked(pane_grid::Pane),
-    ToggleMaximize(pane_grid::Pane),
-    ToggleFullscreen(pane_grid::Pane),
-    ClosePane(pane_grid::Pane),
+    Workspace(WorkspaceMessage),
     // sidebar
     ToggleSidebar,
     ToggleDir(PathBuf),
@@ -485,311 +441,11 @@ impl std::fmt::Display for Command {
     }
 }
 
-/// What kind of content a pane shows.
-/// What a pane shows. Each editor pane carries the [`DocId`] of the document
-/// it renders; there is at most one preview pane (it follows the focus).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PaneKind {
-    Editor(DocId),
-    Preview,
-}
-
 fn toggled_fullscreen(
     current: Option<pane_grid::Pane>,
     target: pane_grid::Pane,
 ) -> Option<pane_grid::Pane> {
     (current != Some(target)).then_some(target)
-}
-
-fn fullscreen_following_focus(
-    current: Option<pane_grid::Pane>,
-    focused: pane_grid::Pane,
-) -> Option<pane_grid::Pane> {
-    current.map(|_| focused)
-}
-
-/// The open file: its text (owned by iced's editor), undo history, path, and
-/// its own preview/compile state (so each document keeps its rendered preview
-/// even while another is focused).
-pub struct Document {
-    pub path: Option<PathBuf>,
-    pub content: text_editor::Content,
-    pub history: History,
-    pub modified: bool,
-    /// Bumped whenever `content` is replaced wholesale (undo/redo), so the
-    /// dimming highlighter knows its cached lines are stale.
-    pub generation: usize,
-    /// This document's rendered preview (markdown / PDF pages), shown when it
-    /// is the focused document.
-    pub preview: Preview,
-    /// A LaTeX compile is running for this document.
-    pub compiling: bool,
-    /// The last compile error for this document, shown as a modal while it is
-    /// focused.
-    pub compile_error: Option<String>,
-    /// A "phantom" of a just-deleted sentence: the deleted text, kept dimmed in
-    /// the buffer immediately after the cursor. The writer can type it back
-    /// (matching chars fill in, others push it along), TAB to accept it, or
-    /// SHIFT/CTRL+BACKSPACE to discard it (whole, or the last word). `None`
-    /// when no phantom is active. Stripped from the buffer on save.
-    pub phantom: Option<String>,
-    /// Derived spelling diagnostics for the current real document text.
-    pub spell_issues: Vec<SpellIssue>,
-    /// Bumped for every text mutation; gates asynchronous scan/suggestion
-    /// results so byte spans from an older buffer are never applied.
-    spell_revision: u64,
-    /// When this document last became eligible for a debounced scan.
-    spell_dirty_since: Option<Instant>,
-    /// A scan is currently running for some revision of this document.
-    spell_in_flight: bool,
-    /// The buffer text as last saved or loaded — the baseline `modified` is
-    /// measured against, so reverting edits (or undoing to the saved state)
-    /// clears the unsaved marker. See [`Document::refresh_modified`].
-    saved_text: String,
-}
-
-impl Document {
-    fn untitled() -> Self {
-        Self {
-            path: None,
-            content: text_editor::Content::new(),
-            history: History::default(),
-            modified: false,
-            generation: 0,
-            preview: Preview::None,
-            compiling: false,
-            compile_error: None,
-            phantom: None,
-            spell_issues: Vec::new(),
-            spell_revision: 0,
-            spell_dirty_since: None,
-            spell_in_flight: false,
-            saved_text: String::new(),
-        }
-    }
-
-    fn open(path: PathBuf) -> Self {
-        let content = match std::fs::read_to_string(&path) {
-            Ok(text) => text_editor::Content::with_text(&text),
-            Err(_) => text_editor::Content::new(),
-        };
-        let saved_text = content.text();
-        let mut doc = Self {
-            path: Some(path),
-            content,
-            history: History::default(),
-            modified: false,
-            generation: 0,
-            preview: Preview::None,
-            compiling: false,
-            compile_error: None,
-            phantom: None,
-            spell_issues: Vec::new(),
-            spell_revision: 0,
-            spell_dirty_since: None,
-            spell_in_flight: false,
-            saved_text,
-        };
-        // `with_text` leaves the cursor — and the viewport — at the end of the
-        // text; jump to the very start so the document opens showing its
-        // beginning. DocumentStart scrolls the view to the top too, which a
-        // bare cursor move would not.
-        doc.content.perform(text_editor::Action::Move(
-            text_editor::Motion::DocumentStart,
-        ));
-        doc
-    }
-
-    pub fn kind(&self) -> FileKind {
-        file_kind(self.path.as_deref())
-    }
-
-    /// A fresh, never-edited [untitled] scratch buffer — safe to replace when
-    /// opening a file, since it holds nothing the user typed.
-    fn is_pristine(&self) -> bool {
-        self.path.is_none() && !self.modified && self.content.text().trim().is_empty()
-    }
-
-    pub fn display_name(&self) -> String {
-        self.path
-            .as_deref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "[untitled]".to_string())
-    }
-
-    fn snapshot(&self) -> Snapshot {
-        let pos = self.content.cursor().position;
-        Snapshot {
-            text: self.content.text(),
-            cursor: (pos.line, pos.column),
-        }
-    }
-
-    fn restore(&mut self, snapshot: Snapshot) {
-        // The content is rebuilt wholesale, so any phantom's positions are
-        // void — drop it (the snapshot text already holds the solid sentence).
-        self.phantom = None;
-        self.content = text_editor::Content::with_text(&snapshot.text);
-        self.move_to(snapshot.cursor);
-        self.modified = true;
-        self.generation += 1;
-    }
-
-    fn move_to(&mut self, (line, column): text::Pos) {
-        self.content.move_to(text_editor::Cursor {
-            position: text_editor::Position { line, column },
-            selection: None,
-        });
-    }
-
-    /// The cursor as a `(line, byte_col)` position.
-    fn cursor_pos(&self) -> text::Pos {
-        let p = self.content.cursor().position;
-        (p.line, p.column)
-    }
-
-    /// Select `[a, b)` and delete it, leaving the cursor at `a`.
-    fn delete_span(&mut self, a: text::Pos, b: text::Pos) {
-        self.content.move_to(text_editor::Cursor {
-            position: text_editor::Position {
-                line: a.0,
-                column: a.1,
-            },
-            selection: Some(text_editor::Position {
-                line: b.0,
-                column: b.1,
-            }),
-        });
-        self.content
-            .perform(text_editor::Action::Edit(text_editor::Edit::Backspace));
-    }
-
-    /// Replace an exact byte span as one undoable edit.
-    fn replace_span(&mut self, start: text::Pos, end: text::Pos, replacement: String) {
-        self.history.record(self.snapshot(), false);
-        self.content.move_to(text_editor::Cursor {
-            position: text_editor::Position {
-                line: start.0,
-                column: start.1,
-            },
-            selection: Some(text_editor::Position {
-                line: end.0,
-                column: end.1,
-            }),
-        });
-        self.content
-            .perform(text_editor::Action::Edit(text_editor::Edit::Paste(
-                Arc::new(replacement),
-            )));
-        self.modified = true;
-    }
-
-    /// Discard an active phantom by removing its remaining ghost text from the
-    /// buffer — the deleted sentence stays gone.
-    fn phantom_discard(&mut self) {
-        if let Some(rem) = self.phantom.take() {
-            let cur = self.cursor_pos();
-            self.delete_span(cur, text::advance(cur, &rem));
-            self.modified = true;
-        }
-    }
-
-    /// Accept an active phantom: keep its text as real content, moving the
-    /// cursor to its end.
-    fn phantom_accept(&mut self) {
-        if let Some(rem) = self.phantom.take() {
-            let cur = self.cursor_pos();
-            self.move_to(text::advance(cur, &rem));
-            self.modified = true;
-        }
-    }
-
-    /// Trim the first word off an active phantom (CTRL+BACKSPACE) — the word
-    /// closest to the cursor, since the ghost sits just after it. Removes that
-    /// word (and its trailing space) from the buffer and keeps the tail.
-    fn phantom_trim_word(&mut self) {
-        let Some(rem) = self.phantom.take() else {
-            return;
-        };
-        let cur = self.cursor_pos();
-        let end = text::first_word_end(&rem);
-        // The first word sits flush after the cursor; delete it from the front,
-        // which leaves the cursor exactly where it was, ahead of the tail.
-        self.delete_span(cur, text::advance(cur, &rem[..end]));
-        self.modified = true;
-        let tail = &rem[end..];
-        if !tail.trim().is_empty() {
-            self.phantom = Some(tail.to_string());
-        }
-    }
-
-    /// The buffer's lines as owned strings, for the `core::text` algorithms.
-    pub fn lines(&self) -> Vec<String> {
-        (0..self.content.line_count())
-            .map(|i| {
-                self.content
-                    .line(i)
-                    .map(|l| l.text.to_string())
-                    .unwrap_or_default()
-            })
-            .collect()
-    }
-
-    fn save(&mut self) -> Result<PathBuf, String> {
-        // A pending phantom is ghost text, not document content — drop it so it
-        // never reaches disk.
-        self.phantom_discard();
-        let path = self
-            .path
-            .clone()
-            .ok_or("no filename — create one in the sidebar")?;
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        let text = self.content.text();
-        let mut file_text = text.clone();
-        if !file_text.ends_with('\n') {
-            file_text.push('\n');
-        }
-        std::fs::write(&path, file_text).map_err(|e| e.to_string())?;
-        // Baseline is the buffer text (without the newline we add only on disk),
-        // so a freshly-saved document reads as unmodified.
-        self.saved_text = text;
-        self.modified = false;
-        Ok(path)
-    }
-
-    /// Recompute the unsaved-changes flag by comparing the buffer to the last
-    /// saved/loaded text — so making an edit and then reverting it (by hand or
-    /// via undo back to the saved state) clears the marker. A pending phantom
-    /// always counts as modified: it is a deletion the next save will commit.
-    fn refresh_modified(&mut self) {
-        self.modified = self.phantom.is_some() || self.content.text() != self.saved_text;
-    }
-
-    fn invalidate_spelling(&mut self, enabled: bool) {
-        self.spell_revision = self.spell_revision.wrapping_add(1);
-        self.spell_issues.clear();
-        self.spell_dirty_since = (enabled && self.phantom.is_none()).then(Instant::now);
-    }
-}
-
-/// One rasterized PDF page: its image plus aspect ratio (height / width), so
-/// the preview can scale every page to the pane width and keep proportions.
-#[derive(Debug, Clone)]
-pub struct PdfPage {
-    pub handle: image::Handle,
-    pub aspect: f32,
-}
-
-/// The right pane's content.
-pub enum Preview {
-    None,
-    Markdown(markdown::Content),
-    /// All pages, stacked top-to-bottom in a scrollable.
-    Pdf(Vec<PdfPage>),
 }
 
 /// Dialog waiting on the user when there are unsaved changes.
@@ -806,11 +462,7 @@ pub struct App {
     pub theme: FlowTheme,
     /// Editor typeface, resolved from `config.editor_font`.
     pub editor_font: iced::Font,
-    /// Open documents, keyed by id; each has exactly one editor pane.
-    pub docs: BTreeMap<DocId, Document>,
-    /// The focused document — drives the preview, status bar, and dimming.
-    pub active: DocId,
-    next_id: DocId,
+    pub workspace: Workspace,
     /// PDF preview zoom (1.0 = pages fit the pane width).
     pub pdf_zoom: f32,
     /// The currently held modifier set (tracked from keyboard events). Drives
@@ -823,30 +475,14 @@ pub struct App {
     /// The user scrolled the editor by hand; suspends centering until the next
     /// edit (per the agreed behavior).
     user_scrolled: bool,
-    pub panes: pane_grid::State<PaneKind>,
-    /// The pane that last received a click; gets the highlighted border.
-    pub focused: pane_grid::Pane,
-    /// The pane shown without any application chrome.
-    pub fullscreen: Option<pane_grid::Pane>,
     pub sidebar: Sidebar,
-    pub confirm: Option<PendingAction>,
-    /// File-or-folder choice shown before CTRL+O launches a native picker.
-    pub open_picker: bool,
-    /// The CTRL+F find bar, when open.
-    pub search: Option<Search>,
-    /// The CTRL+. correction chooser, when open.
-    pub spell_correction: Option<SpellCorrection>,
-    /// The contextual actions for the current editor selection.
-    pub selection_menu: Option<SelectionMenu>,
+    pub ui: UiState,
     /// Parsed dictionary shared by background scans and suggestion jobs.
     spell_dictionary: Option<Arc<RwLock<spellbook::Dictionary>>>,
     spell_loading: bool,
     spell_load_revision: u64,
-    /// The escape menu (command bar), when open.
-    pub menu: Option<Menu>,
     /// The editor/preview split, for live ratio changes from the menu.
     preview_split: Option<pane_grid::Split>,
-    pub status: Option<(String, Instant)>,
     /// Last-seen modification times of the watched config files, for
     /// hot-reload (see [`App::poll_config`]).
     config_sig: Vec<Option<SystemTime>>,
@@ -864,35 +500,21 @@ impl App {
 
         let editor_font = resolve_font(&config.editor_font);
         let first_id: DocId = 0;
-        let (panes, first) = pane_grid::State::new(PaneKind::Editor(first_id));
-        let mut docs = BTreeMap::new();
-        docs.insert(first_id, doc);
         let mut app = Self {
             config,
             theme,
             editor_font,
-            docs,
-            active: first_id,
-            next_id: first_id + 1,
+            workspace: Workspace::new(first_id, doc),
             pdf_zoom: 1.0,
             modifiers: iced::keyboard::Modifiers::default(),
             centering: false,
             user_scrolled: false,
-            panes,
-            focused: first,
-            fullscreen: None,
             sidebar: Sidebar::new(PathBuf::from(".")),
-            confirm: None,
-            open_picker: false,
-            search: None,
-            spell_correction: None,
-            selection_menu: None,
+            ui: UiState::default(),
             spell_dictionary: None,
             spell_loading: false,
             spell_load_revision: 0,
-            menu: None,
             preview_split: None,
-            status: None,
             config_sig: Vec::new(),
         };
         app.config_sig = app.config_signature();
@@ -901,86 +523,71 @@ impl App {
             app.set_status(w);
         }
         // Start ready to type.
-        let focus = view::editor::focus(app.active);
+        let focus = view::editor::focus(app.workspace.active_id());
         let spelling = app.load_spell_dictionary();
         (app, Task::batch([focus, spelling]))
     }
 
     /// The focused document.
     pub fn active_doc(&self) -> &Document {
-        &self.docs[&self.active]
+        self.workspace.active_document()
     }
 
     fn active_doc_mut(&mut self) -> &mut Document {
-        self.docs.get_mut(&self.active).expect("active doc exists")
+        self.workspace.active_document_mut()
     }
 
     pub fn selection_is_markdown(&self) -> bool {
-        self.selection_menu.as_ref().is_some_and(|menu| {
-            self.docs
-                .get(&menu.doc_id)
+        self.ui.selection_menu.as_ref().is_some_and(|menu| {
+            self.workspace.documents
+                .get(&menu.target.document())
                 .is_some_and(|doc| doc.kind() == FileKind::Markdown)
         })
     }
 
     pub fn selection_can_spell_correct(&self) -> bool {
-        let Some(menu) = &self.selection_menu else {
+        let Some(menu) = &self.ui.selection_menu else {
             return false;
         };
-        let Some(doc) = self.docs.get(&menu.doc_id) else {
+        let Some(doc) = self.workspace.document(menu.target.document()) else {
             return false;
         };
         self.config.spell_check
             && self.spell_dictionary.is_some()
             && doc
-                .spell_issues
+                .spell_issues()
                 .iter()
-                .any(|issue| issue.start == menu.start && issue.end == menu.end)
+                .any(|issue| issue.start == menu.target.start() && issue.end == menu.target.end())
     }
 
     fn current_selection(&self) -> Option<(DocId, String)> {
-        let menu = self.selection_menu.as_ref()?;
-        let doc = self.docs.get(&menu.doc_id)?;
-        (text::slice(&doc.lines(), menu.start, menu.end) == menu.selected)
-            .then_some((menu.doc_id, menu.selected.clone()))
+        let menu = self.ui.selection_menu.as_ref()?;
+        let doc = self.workspace.document(menu.target.document())?;
+        menu.target
+            .is_current(doc)
+            .then_some((menu.target.document(), menu.target.text().to_string()))
     }
 
     fn restore_selection_target(&mut self) -> Option<DocId> {
-        let menu = self.selection_menu.as_ref()?.clone();
+        let menu = self.ui.selection_menu.as_ref()?.clone();
         self.current_selection()?;
-        let doc = self.docs.get_mut(&menu.doc_id)?;
-        doc.content.move_to(text_editor::Cursor {
-            position: text_editor::Position {
-                line: menu.end.0,
-                column: menu.end.1,
-            },
-            selection: Some(text_editor::Position {
-                line: menu.start.0,
-                column: menu.start.1,
-            }),
-        });
-        Some(menu.doc_id)
+        let doc = self.workspace.document_mut(menu.target.document())?;
+        menu.target.restore(doc).then_some(menu.target.document())
     }
 
     /// The pane currently showing document `id`, if any.
     fn pane_of_doc(&self, id: DocId) -> Option<pane_grid::Pane> {
-        self.panes
-            .iter()
-            .find(|(_, kind)| matches!(kind, PaneKind::Editor(d) if *d == id))
-            .map(|(pane, _)| *pane)
+        self.workspace.pane_of_document(id)
     }
 
     /// Number of editor panes (the preview pane doesn't count).
     pub fn editor_count(&self) -> usize {
-        self.panes
-            .iter()
-            .filter(|(_, kind)| matches!(kind, PaneKind::Editor(_)))
-            .count()
+        self.workspace.editor_count()
     }
 
     /// Paths of all open documents — for the sidebar's open-file highlight.
     pub fn open_paths(&self) -> std::collections::BTreeSet<PathBuf> {
-        self.docs.values().filter_map(|d| d.path.clone()).collect()
+        self.workspace.documents.values().filter_map(|d| d.path.clone()).collect()
     }
 
     pub fn title(&self) -> String {
@@ -1008,15 +615,15 @@ impl App {
             // shows at launch without needing a click.
             iced::event::listen_with(on_window_focused),
         ];
-        if self.menu.is_some() {
+        if self.ui.menu.is_some() {
             // The command bar's filter input ignores arrow keys, so they
             // arrive here and drive the list selection.
             subs.push(iced::event::listen_with(on_menu_arrows));
         }
-        if self.spell_correction.is_some() {
+        if self.ui.spell_correction.is_some() {
             subs.push(iced::event::listen_with(on_spell_arrows));
         }
-        if self.fullscreen.is_some() {
+        if self.workspace.fullscreen.is_some() {
             subs.push(iced::event::listen_with(on_fullscreen_pane_cycle));
         }
         // Per-frame ticks only while a centering animation is converging — no
@@ -1027,9 +634,9 @@ impl App {
         if self.config.spell_check
             && self.spell_dictionary.is_some()
             && self
-                .docs
-                .get(&self.active)
-                .is_some_and(|doc| doc.spell_dirty_since.is_some())
+                .workspace.documents
+                .get(&self.workspace.active)
+                .is_some_and(Document::spelling_pending)
         {
             subs.push(iced::time::every(Duration::from_millis(100)).map(|_| Message::SpellTick));
         }
@@ -1044,7 +651,7 @@ impl App {
     }
 
     fn set_status(&mut self, msg: impl Into<String>) {
-        self.status = Some((msg.into(), Instant::now()));
+        self.ui.set_status(msg);
     }
 
     fn load_spell_dictionary(&mut self) -> Task<Message> {
@@ -1052,11 +659,9 @@ impl App {
         let load_revision = self.spell_load_revision;
         self.spell_dictionary = None;
         self.spell_loading = false;
-        self.spell_correction = None;
-        for doc in self.docs.values_mut() {
-            doc.spell_revision = doc.spell_revision.wrapping_add(1);
-            doc.spell_issues.clear();
-            doc.spell_dirty_since = None;
+        self.ui.spell_correction = None;
+        for doc in self.workspace.documents.values_mut() {
+            doc.clear_spelling();
         }
         if !self.config.spell_check {
             return Task::none();
@@ -1079,7 +684,7 @@ impl App {
 
     fn mark_all_spelling_dirty(&mut self) {
         let enabled = self.config.spell_check && self.spell_dictionary.is_some();
-        for doc in self.docs.values_mut() {
+        for doc in self.workspace.documents.values_mut() {
             doc.invalidate_spelling(enabled);
         }
     }
@@ -1088,23 +693,15 @@ impl App {
         let Some(dictionary) = self.spell_dictionary.clone() else {
             return Task::none();
         };
-        let id = self.active;
-        let Some(doc) = self.docs.get_mut(&id) else {
+        let id = self.workspace.active;
+        let Some(doc) = self.workspace.documents.get_mut(&id) else {
             return Task::none();
         };
-        let ready = doc
-            .spell_dirty_since
-            .is_some_and(|since| since.elapsed() >= SPELL_DEBOUNCE)
-            && !doc.spell_in_flight
-            && doc.phantom.is_none();
-        if !ready {
+        let Some(revision) = doc.begin_spell_scan(SPELL_DEBOUNCE) else {
             return Task::none();
-        }
+        };
 
-        let revision = doc.spell_revision;
         let input = doc.content.text();
-        doc.spell_dirty_since = None;
-        doc.spell_in_flight = true;
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
@@ -1139,9 +736,9 @@ impl App {
             return Task::none();
         }
         let cursor = doc.cursor_pos();
-        let issue = core::spell::issue_near(&doc.spell_issues, cursor).cloned();
+        let issue = core::spell::issue_near(doc.spell_issues(), cursor).cloned();
         if issue.is_none() {
-            let Some(next) = core::spell::next_issue(&doc.spell_issues, cursor).cloned() else {
+            let Some(next) = core::spell::next_issue(doc.spell_issues(), cursor).cloned() else {
                 self.set_status("no misspellings in this document");
                 return Task::none();
             };
@@ -1151,15 +748,15 @@ impl App {
             doc.history.break_run();
             self.set_status(format!("next misspelling: {word}"));
             self.request_center();
-            return view::editor::focus(self.active);
+            return view::editor::focus(self.workspace.active);
         }
         let issue = issue.expect("checked above");
-        let id = self.active;
-        let revision = doc.spell_revision;
+        let id = self.workspace.active;
+        let revision = doc.spell_revision();
         let word = issue.word.clone();
-        self.search = None;
-        self.menu = None;
-        self.spell_correction = Some(SpellCorrection {
+        self.ui.search = None;
+        self.ui.menu = None;
+        self.ui.spell_correction = Some(SpellCorrection {
             doc_id: id,
             revision,
             issue,
@@ -1188,7 +785,7 @@ impl App {
     }
 
     fn apply_spell_correction(&mut self, replacement: String) -> Task<Message> {
-        let Some(correction) = self.spell_correction.as_ref() else {
+        let Some(correction) = self.ui.spell_correction.as_ref() else {
             return Task::none();
         };
         let replacement = replacement.trim().to_string();
@@ -1200,14 +797,14 @@ impl App {
             self.set_status("choose or type a different spelling");
             return view::spell::focus_input();
         }
-        let correction = self.spell_correction.take().expect("checked above");
-        let Some(doc) = self.docs.get_mut(&correction.doc_id) else {
+        let correction = self.ui.spell_correction.take().expect("checked above");
+        let Some(doc) = self.workspace.documents.get_mut(&correction.doc_id) else {
             return Task::none();
         };
         let current_word = text::slice(&doc.lines(), correction.issue.start, correction.issue.end);
-        if doc.spell_revision != correction.revision || current_word != correction.issue.word {
+        if doc.spell_revision() != correction.revision || current_word != correction.issue.word {
             self.set_status("text changed before the correction could be applied");
-            return view::editor::focus(self.active);
+            return view::editor::focus(self.workspace.active);
         }
 
         doc.replace_span(
@@ -1225,19 +822,19 @@ impl App {
     }
 
     fn add_spell_word(&mut self) -> Task<Message> {
-        let Some(correction) = self.spell_correction.take() else {
+        let Some(correction) = self.ui.spell_correction.take() else {
             return Task::none();
         };
         let word = correction.issue.word;
         let Some(dictionary) = self.spell_dictionary.clone() else {
             self.set_status("spell dictionary unavailable");
-            return view::editor::focus(self.active);
+            return view::editor::focus(self.workspace.active);
         };
         let path = match core::spell::personal_dictionary_path(&self.config.spell_language) {
             Ok(path) => path,
             Err(error) => {
                 self.set_status(format!("could not add {word}: {error}"));
-                return view::editor::focus(self.active);
+                return view::editor::focus(self.workspace.active);
             }
         };
         let load_revision = self.spell_load_revision;
@@ -1258,7 +855,7 @@ impl App {
             },
             move |result| Message::SpellWordSaved(load_revision, word, result),
         );
-        Task::batch([save, view::editor::focus(self.active)])
+        Task::batch([save, view::editor::focus(self.workspace.active)])
     }
 
     /// Start (or continue) a typewriter-centering animation after a cursor move
@@ -1275,7 +872,7 @@ impl App {
     /// when no find bar is open.
     fn run_search(&mut self, query: String) {
         let lines = self.active_doc().lines();
-        let origin = self.search.as_ref().map_or((0, 0), |s| s.origin);
+        let origin = self.ui.search.as_ref().map_or((0, 0), |s| s.origin);
         let matches = text::find_all(&lines, &query);
         let current = (!matches.is_empty()).then(|| {
             matches
@@ -1283,7 +880,7 @@ impl App {
                 .position(|&(start, _)| start >= origin)
                 .unwrap_or(0)
         });
-        if let Some(search) = self.search.as_mut() {
+        if let Some(search) = self.ui.search.as_mut() {
             search.query = query;
             search.matches = matches;
             search.current = current;
@@ -1293,7 +890,7 @@ impl App {
 
     /// Move the find selection by `dir` (+1 next, −1 previous), wrapping.
     fn step_match(&mut self, dir: isize) {
-        if let Some(search) = self.search.as_mut()
+        if let Some(search) = self.ui.search.as_mut()
             && !search.matches.is_empty()
         {
             let n = search.matches.len() as isize;
@@ -1307,7 +904,7 @@ impl App {
     /// the match itself highlighted) and re-center on it.
     fn select_match(&mut self) {
         let span = self
-            .search
+            .ui.search
             .as_ref()
             .and_then(|s| s.current.and_then(|i| s.matches.get(i).copied()));
         let Some((start, end)) = span else {
@@ -1334,18 +931,18 @@ impl App {
     fn sync_preview_pane(&mut self) {
         let wants_preview = self.active_doc().kind() != FileKind::Plain;
         let has_preview = self
-            .panes
+            .workspace.panes
             .iter()
             .any(|(_, kind)| *kind == PaneKind::Preview);
 
         if wants_preview
             && !has_preview
-            && let Some(editor) = self.pane_of_doc(self.active)
+            && let Some(editor) = self.pane_of_doc(self.workspace.active)
             && let Some((_, split)) =
-                self.panes
+                self.workspace.panes
                     .split(pane_grid::Axis::Vertical, editor, PaneKind::Preview)
         {
-            self.panes.resize(split, self.config.split_ratio());
+            self.workspace.panes.resize(split, self.config.split_ratio());
             self.preview_split = Some(split);
         }
     }
@@ -1353,7 +950,7 @@ impl App {
     /// Open the root command bar and focus its input so typing filters
     /// commands immediately.
     fn open_command_bar(&mut self) -> Task<Message> {
-        self.menu = Some(Menu::Commands(Picker::default()));
+        self.ui.menu = Some(Menu::Commands(Picker::default()));
         view::menu::focus_input()
     }
 
@@ -1362,69 +959,69 @@ impl App {
     fn run_command(&mut self, command: Command) -> Task<Message> {
         match command {
             Command::Theme => {
-                self.menu = Some(Menu::Theme(Picker::default()));
+                self.ui.menu = Some(Menu::Theme(Picker::default()));
                 view::menu::focus_input()
             }
             Command::Font => {
-                self.menu = Some(Menu::Font(Picker::default()));
+                self.ui.menu = Some(Menu::Font(Picker::default()));
                 view::menu::focus_input()
             }
             Command::Compiler => {
-                self.menu = Some(Menu::Compiler(Picker::default()));
+                self.ui.menu = Some(Menu::Compiler(Picker::default()));
                 view::menu::focus_input()
             }
             Command::Split => {
-                self.menu = Some(Menu::Split);
+                self.ui.menu = Some(Menu::Split);
                 Task::none()
             }
             Command::Dimming => {
                 self.config.focus_dimming = !self.config.focus_dimming;
                 self.save_config();
-                self.menu = None;
+                self.ui.menu = None;
                 self.set_status(if self.config.focus_dimming {
                     "focus dimming on"
                 } else {
                     "focus dimming off"
                 });
-                view::editor::focus(self.active)
+                view::editor::focus(self.workspace.active)
             }
             Command::Typewriter => {
                 self.config.typewriter_scroll = !self.config.typewriter_scroll;
                 self.save_config();
-                self.menu = None;
+                self.ui.menu = None;
                 self.set_status(if self.config.typewriter_scroll {
                     "typewriter scroll on"
                 } else {
                     "typewriter scroll off"
                 });
                 self.request_center();
-                view::editor::focus(self.active)
+                view::editor::focus(self.workspace.active)
             }
             Command::Glow => {
                 self.config.paragraph_glow = !self.config.paragraph_glow;
                 self.save_config();
-                self.menu = None;
+                self.ui.menu = None;
                 self.set_status(if self.config.paragraph_glow {
                     "paragraph glow on"
                 } else {
                     "paragraph glow off"
                 });
-                view::editor::focus(self.active)
+                view::editor::focus(self.workspace.active)
             }
             Command::Spelling => {
                 self.config.spell_check = !self.config.spell_check;
                 self.save_config();
-                self.menu = None;
+                self.ui.menu = None;
                 self.set_status(if self.config.spell_check {
                     "spell checking on"
                 } else {
                     "spell checking off"
                 });
                 let load = self.load_spell_dictionary();
-                Task::batch([load, view::editor::focus(self.active)])
+                Task::batch([load, view::editor::focus(self.workspace.active)])
             }
             Command::Help => {
-                self.menu = Some(Menu::Help);
+                self.ui.menu = Some(Menu::Help);
                 Task::none()
             }
         }
@@ -1468,7 +1065,7 @@ impl App {
     /// Skipped while the command bar is open so it can't clobber the live
     /// theme/font preview the user is arrowing through.
     fn poll_config(&mut self) -> Task<Message> {
-        if self.menu.is_some() {
+        if self.ui.menu.is_some() {
             return Task::none();
         }
         let sig = self.config_signature();
@@ -1487,7 +1084,7 @@ impl App {
         self.theme = self.config.load_theme().0;
         self.editor_font = resolve_font(&self.config.editor_font);
         if let Some(split) = self.preview_split {
-            self.panes.resize(split, self.config.split_ratio());
+            self.workspace.panes.resize(split, self.config.split_ratio());
         }
         // A theme name change means a different file to watch.
         self.config_sig = self.config_signature();
@@ -1509,53 +1106,24 @@ impl App {
     /// all read `active`). Focusing the preview leaves `active` on the last
     /// editor, so the preview keeps showing it.
     fn set_focus(&mut self, pane: pane_grid::Pane) {
-        self.focused = pane;
-        self.fullscreen = fullscreen_following_focus(self.fullscreen, pane);
-        if let Some(PaneKind::Editor(id)) = self.panes.get(pane) {
-            self.active = *id;
-        }
+        self.workspace.focus(pane);
     }
 
     /// Re-establish the invariants after any structural change (close, drop):
     /// every document has a live editor pane, `active` is a living editor, and
     /// `focused` is a living pane.
     fn validate_panes(&mut self) {
-        let live: std::collections::BTreeSet<DocId> = self
-            .panes
-            .iter()
-            .filter_map(|(_, k)| match k {
-                PaneKind::Editor(d) => Some(*d),
-                _ => None,
-            })
-            .collect();
-        // Drop documents whose editor pane is gone.
-        self.docs.retain(|id, _| live.contains(id));
-        if !live.contains(&self.active) {
-            self.active = live.into_iter().next().expect("an editor remains");
-        }
-        if self.panes.get(self.focused).is_none() {
-            self.focused = self
-                .pane_of_doc(self.active)
-                .or_else(|| self.panes.iter().next().map(|(p, _)| *p))
-                .expect("a pane remains");
-        }
+        self.workspace.validate();
     }
 
     /// Close a pane. The preview pane reopens on the next save; an editor pane
     /// drops its document. The last editor never closes — there must always be
     /// a document to edit.
     fn close_pane(&mut self, pane: pane_grid::Pane) {
-        if matches!(self.panes.get(pane), Some(PaneKind::Editor(_))) && self.editor_count() <= 1 {
-            return;
-        }
-        if let Some((kind, sibling)) = self.panes.close(pane) {
-            if self.focused == pane {
-                self.set_focus(sibling);
-            }
-            if kind == PaneKind::Preview {
+        if let ClosePaneResult::Closed { preview } = self.workspace.close_pane(pane) {
+            if preview {
                 self.preview_split = None;
             }
-            self.validate_panes();
             self.set_status("closed pane");
         }
     }
@@ -1564,15 +1132,8 @@ impl App {
     /// wrapping around. Focusing an editor pane hands it the keyboard so the
     /// cursor is live without a click; the preview pane just takes the border.
     fn cycle_pane(&mut self, dir: isize) -> Task<Message> {
-        let order: Vec<pane_grid::Pane> = self.panes.iter().map(|(p, _)| *p).collect();
-        let Some(i) = order.iter().position(|p| *p == self.focused) else {
-            return Task::none();
-        };
-        let n = order.len() as isize;
-        let next = order[(i as isize + dir).rem_euclid(n) as usize];
-        self.set_focus(next);
-        if matches!(self.panes.get(next), Some(PaneKind::Editor(_))) {
-            return view::editor::focus(self.active);
+        if matches!(self.workspace.cycle_focus(dir), Some(PaneKind::Editor(_))) {
+            return view::editor::focus(self.workspace.active);
         }
         Task::none()
     }
@@ -1605,7 +1166,7 @@ impl App {
     fn open_file(&mut self, path: PathBuf) -> Task<Message> {
         // Already open? Just focus it.
         if let Some(id) = self
-            .docs
+            .workspace.documents
             .iter()
             .find(|(_, d)| d.path.as_ref() == Some(&path))
             .map(|(id, _)| *id)
@@ -1613,9 +1174,9 @@ impl App {
             if let Some(pane) = self.pane_of_doc(id) {
                 self.set_focus(pane);
             } else {
-                self.active = id;
+                self.workspace.active = id;
             }
-            return view::editor::focus(self.active);
+            return view::editor::focus(self.workspace.active);
         }
 
         let mut doc = Document::open(path);
@@ -1629,15 +1190,13 @@ impl App {
             *self.active_doc_mut() = doc;
             self.sync_preview_pane();
             self.set_status(format!("opened {name}"));
-            return view::editor::focus(self.active);
+            return view::editor::focus(self.workspace.active);
         }
 
-        let id = self.next_id;
-        self.next_id += 1;
-        self.docs.insert(id, doc);
+        let id = self.workspace.insert_document(doc);
         self.spawn_editor(id);
         self.set_status(format!("opened {name}"));
-        view::editor::focus(self.active)
+        view::editor::focus(self.workspace.active)
     }
 
     fn change_directory(&mut self, path: PathBuf) {
@@ -1715,7 +1274,7 @@ impl App {
                     } else {
                         format!("renamed to {}", path.display())
                     });
-                    view::editor::focus(self.active)
+                    view::editor::focus(self.workspace.active)
                 }
             }
             Err(e) => {
@@ -1741,7 +1300,7 @@ impl App {
         }
 
         let remapped: Vec<(DocId, PathBuf)> = self
-            .docs
+            .workspace.documents
             .iter()
             .filter_map(|(id, doc)| {
                 let path = doc.path.as_deref()?;
@@ -1753,7 +1312,7 @@ impl App {
 
         std::fs::rename(&source, &destination).map_err(|e| e.to_string())?;
         for (id, path) in remapped {
-            if let Some(doc) = self.docs.get_mut(&id) {
+            if let Some(doc) = self.workspace.documents.get_mut(&id) {
                 doc.path = Some(path);
             }
         }
@@ -1773,7 +1332,7 @@ impl App {
                 return;
             }
         };
-        let contains_open_document = self.docs.values().any(|doc| {
+        let contains_open_document = self.workspace.documents.values().any(|doc| {
             doc.path
                 .as_deref()
                 .and_then(|path| std::fs::canonicalize(path).ok())
@@ -1803,15 +1362,7 @@ impl App {
     /// the active editor, stacking vertically), make it active, and add a
     /// preview pane if it wants one.
     fn spawn_editor(&mut self, id: DocId) {
-        let anchor = self.pane_of_doc(self.active).unwrap_or(self.focused);
-        match self
-            .panes
-            .split(pane_grid::Axis::Horizontal, anchor, PaneKind::Editor(id))
-        {
-            Some((new_pane, _)) => self.set_focus(new_pane),
-            // Split shouldn't fail, but keep `active` valid if it ever does.
-            None => self.active = id,
-        }
+        self.workspace.split_editor(id);
         self.sync_preview_pane();
     }
 
@@ -1834,7 +1385,7 @@ impl App {
     /// Re-render (markdown) or re-compile (LaTeX) the active document's
     /// preview after a save.
     fn refresh_preview(&mut self) -> Task<Message> {
-        let id = self.active;
+        let id = self.workspace.active;
         match self.active_doc().kind() {
             FileKind::Plain => Task::none(),
             FileKind::Markdown => {
@@ -1876,7 +1427,7 @@ impl App {
         let changed_doc = match &message {
             Message::Edit(id, action)
                 if matches!(action, text_editor::Action::Edit(_))
-                    || self.docs.get(id).is_some_and(|doc| doc.phantom.is_some()) =>
+                    || self.workspace.documents.get(id).is_some_and(|doc| doc.phantom.is_some()) =>
             {
                 Some(*id)
             }
@@ -1885,13 +1436,13 @@ impl App {
             | Message::DeleteSentence
             | Message::DeleteWord
             | Message::PhantomAccept
-            | Message::Save => Some(self.active),
+            | Message::Save => Some(self.workspace.active),
             _ => None,
         };
         let task = self.update_inner(message);
         if let Some(id) = changed_doc {
             let enabled = self.config.spell_check && self.spell_dictionary.is_some();
-            if let Some(doc) = self.docs.get_mut(&id) {
+            if let Some(doc) = self.workspace.documents.get_mut(&id) {
                 doc.refresh_modified();
                 doc.invalidate_spelling(enabled);
             }
@@ -1902,7 +1453,7 @@ impl App {
     fn update_inner(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Edit(id, action) => {
-                self.selection_menu = None;
+                self.ui.selection_menu = None;
                 // An edit/click in a pane makes its document the focused one.
                 if let Some(pane) = self.pane_of_doc(id) {
                     self.set_focus(pane);
@@ -1913,7 +1464,7 @@ impl App {
                 if matches!(action, text_editor::Action::Scroll { .. }) {
                     self.user_scrolled = true;
                     self.centering = false;
-                    if let Some(doc) = self.docs.get_mut(&id) {
+                    if let Some(doc) = self.workspace.documents.get_mut(&id) {
                         doc.content.perform(action);
                     }
                     return Task::none();
@@ -1922,93 +1473,25 @@ impl App {
                 // paragraph (the animation self-stops once centered).
                 self.user_scrolled = false;
                 self.request_center();
-                let Some(doc) = self.docs.get_mut(&id) else {
+                let Some(doc) = self.workspace.documents.get_mut(&id) else {
                     return Task::none();
                 };
-                // A phantom intercepts editing: matching keystrokes fill the
-                // ghost in, others push it along, and anything else abandons it.
-                if doc.phantom.is_some() {
-                    match &action {
-                        text_editor::Action::Edit(text_editor::Edit::Insert(c)) => {
-                            let c = *c;
-                            let rem = doc.phantom.as_deref().unwrap_or_default();
-                            if rem.starts_with(c) {
-                                // Match: step over the ghost char (it stays in
-                                // the buffer, now solid) without inserting.
-                                let rest = rem[c.len_utf8()..].to_string();
-                                doc.content
-                                    .perform(text_editor::Action::Move(text_editor::Motion::Right));
-                                doc.phantom = (!rest.is_empty()).then_some(rest);
-                                doc.modified = true;
-                            } else {
-                                // Mismatch: insert normally; the ghost is pushed
-                                // to the right of the new character.
-                                doc.history.record(doc.snapshot(), !c.is_whitespace());
-                                doc.modified = true;
-                                doc.content.perform(action);
-                            }
-                            return Task::none();
-                        }
-                        text_editor::Action::Edit(text_editor::Edit::Backspace) => {
-                            // Plain BACKSPACE leaves the phantom alone — only
-                            // SHIFT+BACKSPACE discards it. Delete the character
-                            // before the cursor as usual; the ghost stays put
-                            // just after the (now moved-back) cursor.
-                            doc.history.record(doc.snapshot(), false);
-                            doc.modified = true;
-                            doc.content.perform(action);
-                            return Task::none();
-                        }
-                        text_editor::Action::Edit(_) | text_editor::Action::Move(_) => {
-                            // Other edits/moves abandon the ghost (sentence stays
-                            // deleted), then apply normally.
-                            doc.history.break_run();
-                            doc.phantom_discard();
-                            doc.content.perform(action);
-                            return Task::none();
-                        }
-                        // Clicks/drags/selection: abandon and let normal
-                        // handling below run.
-                        _ => doc.phantom_discard(),
-                    }
-                }
-                match &action {
-                    text_editor::Action::Edit(edit) => {
-                        let coalesce = matches!(
-                            edit,
-                            text_editor::Edit::Insert(c) if !c.is_whitespace()
-                        );
-                        doc.history.record(doc.snapshot(), coalesce);
-                        doc.modified = true;
-                    }
-                    text_editor::Action::Move(_)
-                    | text_editor::Action::Select(_)
-                    | text_editor::Action::Click(_)
-                    | text_editor::Action::Drag(_) => doc.history.break_run(),
-                    _ => {}
-                }
-                doc.content.perform(action);
+                doc.apply_action(action);
                 Task::none()
             }
-            Message::OpenSelectionMenu(id, position, bounds) => {
-                let Some((selected, start, end)) = self.docs.get(&id).and_then(|doc| {
-                    let selected = doc.content.selection()?.replace("\r\n", "\n").replace('\r', "\n");
-                    if selected.is_empty() {
-                        return None;
-                    }
-                    let (start, end) = selection_span(&doc.lines(), doc.content.cursor(), &selected)?;
-                    Some((selected, start, end))
-                })
+            Message::Selection(message) => match message {
+            SelectionMessage::Open(id, position, bounds) => {
+                let Some(target) = self
+                    .workspace.documents
+                    .get(&id)
+                    .and_then(|doc| TextSelection::capture(id, doc))
                 else {
-                    self.selection_menu = None;
+                    self.ui.selection_menu = None;
                     return Task::none();
                 };
                 if let Some(pane) = self.pane_of_doc(id) {
                     self.set_focus(pane);
                 }
-                self.search = None;
-                self.spell_correction = None;
-                self.menu = None;
                 self.sidebar.close_context();
                 let width = 196.0_f32.min((bounds.width - 16.0).max(0.0));
                 let height = 278.0_f32.min((bounds.height - 16.0).max(0.0));
@@ -2016,36 +1499,30 @@ impl App {
                     (position.x + 6.0).clamp(8.0, (bounds.width - width - 8.0).max(8.0)),
                     (position.y + 6.0).clamp(8.0, (bounds.height - height - 8.0).max(8.0)),
                 );
-                self.selection_menu = Some(SelectionMenu {
-                    doc_id: id,
-                    position,
-                    selected,
-                    start,
-                    end,
-                });
+                self.ui.open_selection_menu(SelectionMenu { target, position });
                 Task::none()
             }
-            Message::CloseSelectionMenu => {
-                self.selection_menu = None;
-                view::editor::focus(self.active)
+            SelectionMessage::Close => {
+                self.ui.selection_menu = None;
+                view::editor::focus(self.workspace.active)
             }
-            Message::SelectionCopy => {
+            SelectionMessage::Copy => {
                 let Some((id, selected)) = self.current_selection() else {
-                    self.selection_menu = None;
+                    self.ui.selection_menu = None;
                     return Task::none();
                 };
-                self.active = id;
-                self.selection_menu = None;
+                self.workspace.active = id;
+                self.ui.selection_menu = None;
                 Task::batch([iced::clipboard::write(selected), view::editor::focus(id)])
             }
-            Message::SelectionCut => {
+            SelectionMessage::Cut => {
                 let Some((id, selected)) = self.current_selection() else {
-                    self.selection_menu = None;
+                    self.ui.selection_menu = None;
                     return Task::none();
                 };
                 self.restore_selection_target();
-                self.active = id;
-                self.selection_menu = None;
+                self.workspace.active = id;
+                self.ui.selection_menu = None;
                 Task::batch([
                     iced::clipboard::write(selected),
                     self.update(Message::Edit(
@@ -2055,21 +1532,25 @@ impl App {
                     view::editor::focus(id),
                 ])
             }
-            Message::SelectionPaste => {
+            SelectionMessage::Paste => {
                 let Some((id, selected)) = self.current_selection() else {
-                    self.selection_menu = None;
+                    self.ui.selection_menu = None;
                     return Task::none();
                 };
                 self.restore_selection_target();
-                self.active = id;
-                self.selection_menu = None;
+                self.workspace.active = id;
+                self.ui.selection_menu = None;
                 iced::clipboard::read().map(move |contents| {
-                    Message::SelectionPasteReady(id, selected.clone(), contents)
+                    Message::Selection(SelectionMessage::PasteReady(
+                        id,
+                        selected.clone(),
+                        contents,
+                    ))
                 })
             }
-            Message::SelectionPasteReady(id, selected, contents) => {
+            SelectionMessage::PasteReady(id, selected, contents) => {
                 if self
-                    .docs
+                    .workspace.documents
                     .get(&id)
                     .and_then(|doc| doc.content.selection())
                     .as_deref()
@@ -2079,44 +1560,50 @@ impl App {
                 }
                 let Some(contents) = contents else {
                     self.set_status("clipboard is empty");
-                    return view::editor::focus(self.active);
+                    return view::editor::focus(self.workspace.active);
                 };
                 self.update(Message::Edit(
                     id,
                     text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(contents))),
                 ))
             }
-            Message::SelectionSpellCorrect => {
+            SelectionMessage::SpellCorrect => {
                 if !self.selection_can_spell_correct() {
                     return Task::none();
                 }
-                let id = self.selection_menu.as_ref().expect("checked above").doc_id;
+                let id = self
+                    .ui.selection_menu
+                    .as_ref()
+                    .expect("checked above")
+                    .target
+                    .document();
                 self.restore_selection_target();
-                self.active = id;
-                self.selection_menu = None;
+                self.workspace.active = id;
+                self.ui.selection_menu = None;
                 self.open_spell_correction()
             }
-            Message::SelectionFormat(format) => {
+            SelectionMessage::Format(format) => {
                 let Some((id, selected)) = self.current_selection() else {
-                    self.selection_menu = None;
+                    self.ui.selection_menu = None;
                     return Task::none();
                 };
                 if self
-                    .docs
+                    .workspace.documents
                     .get(&id)
                     .is_none_or(|doc| doc.kind() != FileKind::Markdown)
                 {
                     return Task::none();
                 }
                 self.restore_selection_target();
-                let replacement = formatted_selection(format, &selected);
-                self.active = id;
-                self.selection_menu = None;
+                let replacement = format.apply(&selected);
+                self.workspace.active = id;
+                self.ui.selection_menu = None;
                 self.update(Message::Edit(
                     id,
                     text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(replacement))),
                 ))
             }
+            },
             Message::Save => self.save(),
             Message::Undo => {
                 let current = self.active_doc().snapshot();
@@ -2248,25 +1735,19 @@ impl App {
             }
             Message::SpellTick => self.start_spell_check(),
             Message::SpellChecked(id, revision, issues) => {
-                if let Some(doc) = self.docs.get_mut(&id) {
-                    doc.spell_in_flight = false;
-                    if self.config.spell_check
-                        && doc.spell_revision == revision
-                        && doc.phantom.is_none()
-                    {
-                        doc.spell_issues = issues;
-                    }
+                if let Some(doc) = self.workspace.documents.get_mut(&id) {
+                    doc.complete_spell_scan(revision, self.config.spell_check, issues);
                 }
                 Task::none()
             }
             Message::OpenSpellCorrection => self.open_spell_correction(),
             Message::SpellSuggestions(id, revision, suggestions) => {
                 let revision_is_current = self
-                    .docs
+                    .workspace.documents
                     .get(&id)
-                    .is_some_and(|doc| doc.spell_revision == revision);
+                    .is_some_and(|doc| doc.spell_revision() == revision);
                 if revision_is_current
-                    && let Some(correction) = self.spell_correction.as_mut()
+                    && let Some(correction) = self.ui.spell_correction.as_mut()
                     && correction.doc_id == id
                     && correction.revision == revision
                 {
@@ -2281,13 +1762,13 @@ impl App {
                 Task::none()
             }
             Message::SpellCorrectionInput(input) => {
-                if let Some(correction) = self.spell_correction.as_mut() {
+                if let Some(correction) = self.ui.spell_correction.as_mut() {
                     correction.input = input;
                 }
                 Task::none()
             }
             Message::SpellCorrectionPrev | Message::SpellCorrectionNext => {
-                if let Some(correction) = self.spell_correction.as_mut() {
+                if let Some(correction) = self.ui.spell_correction.as_mut() {
                     let len = correction.suggestions.len();
                     if len > 0 {
                         let step = if matches!(message, Message::SpellCorrectionNext) {
@@ -2304,7 +1785,7 @@ impl App {
             }
             Message::SpellCorrectionSubmit => {
                 let replacement = self
-                    .spell_correction
+                    .ui.spell_correction
                     .as_ref()
                     .map(|correction| correction.input.clone())
                     .unwrap_or_default();
@@ -2312,13 +1793,13 @@ impl App {
             }
             Message::SpellCorrectionApply(replacement) => self.apply_spell_correction(replacement),
             Message::SpellCorrectionIgnore => {
-                if let Some(correction) = self.spell_correction.take()
-                    && let Some(doc) = self.docs.get_mut(&correction.doc_id)
-                    && doc.spell_revision == correction.revision
+                if let Some(correction) = self.ui.spell_correction.take()
+                    && let Some(doc) = self.workspace.documents.get_mut(&correction.doc_id)
+                    && doc.spell_revision() == correction.revision
                 {
-                    doc.spell_issues.retain(|issue| issue != &correction.issue);
+                    doc.ignore_spell_issue(&correction.issue);
                 }
-                view::editor::focus(self.active)
+                view::editor::focus(self.workspace.active)
             }
             Message::AddSpellWord => self.add_spell_word(),
             Message::SpellWordSaved(load_revision, word, result) => {
@@ -2338,12 +1819,12 @@ impl App {
                 Task::none()
             }
             Message::CloseSpellCorrection => {
-                self.spell_correction = None;
-                view::editor::focus(self.active)
+                self.ui.spell_correction = None;
+                view::editor::focus(self.workspace.active)
             }
 
             Message::Compiled(id, result) => {
-                let Some(doc) = self.docs.get_mut(&id) else {
+                let Some(doc) = self.workspace.documents.get_mut(&id) else {
                     return Task::none();
                 };
                 doc.compiling = false;
@@ -2397,17 +1878,17 @@ impl App {
                 // Re-assert editor focus so the caret is visible on launch (and
                 // after alt-tabbing back). Skip it while an overlay owns the
                 // keyboard, or the active pane isn't an editor.
-                if self.menu.is_some()
-                    || self.search.is_some()
-                    || self.spell_correction.is_some()
-                    || self.confirm.is_some()
-                    || self.open_picker
+                if self.ui.menu.is_some()
+                    || self.ui.search.is_some()
+                    || self.ui.spell_correction.is_some()
+                    || self.ui.confirm.is_some()
+                    || self.ui.open_picker
                     || self.sidebar.context_is_editing()
                 {
                     return Task::none();
                 }
-                if matches!(self.panes.get(self.focused), Some(PaneKind::Editor(_))) {
-                    return view::editor::focus(self.active);
+                if matches!(self.workspace.panes.get(self.workspace.focused), Some(PaneKind::Editor(_))) {
+                    return view::editor::focus(self.workspace.active);
                 }
                 Task::none()
             }
@@ -2426,67 +1907,66 @@ impl App {
             }
             Message::DismissError => {
                 self.active_doc_mut().compile_error = None;
-                view::editor::focus(self.active)
+                view::editor::focus(self.workspace.active)
             }
             Message::LinkClicked(uri) => {
                 self.set_status(format!("link: {uri}"));
                 Task::none()
             }
 
-            Message::PaneDragged(pane_grid::DragEvent::Dropped { pane, target }) => {
-                self.panes.drop(pane, target);
+            Message::Workspace(message) => match message {
+            WorkspaceMessage::PaneDragged(pane_grid::DragEvent::Dropped { pane, target }) => {
+                self.workspace.panes.drop(pane, target);
                 // The dragged pane keeps focus; re-derive `active` from
                 // whatever now sits there.
-                self.set_focus(self.focused);
+                self.set_focus(self.workspace.focused);
                 self.validate_panes();
                 Task::none()
             }
-            Message::PaneDragged(_) => Task::none(),
-            Message::PaneResized(pane_grid::ResizeEvent { split, ratio }) => {
-                self.panes.resize(split, ratio);
+            WorkspaceMessage::PaneDragged(_) => Task::none(),
+            WorkspaceMessage::PaneResized(pane_grid::ResizeEvent { split, ratio }) => {
+                self.workspace.panes.resize(split, ratio);
                 Task::none()
             }
-            Message::PaneClicked(pane) => {
-                self.selection_menu = None;
+            WorkspaceMessage::PaneClicked(pane) => {
+                self.ui.selection_menu = None;
                 self.set_focus(pane);
                 Task::none()
             }
-            Message::ToggleMaximize(pane) => {
-                if self.panes.maximized() == Some(pane) {
-                    self.panes.restore();
+            WorkspaceMessage::ToggleMaximize(pane) => {
+                if self.workspace.panes.maximized() == Some(pane) {
+                    self.workspace.panes.restore();
                 } else {
-                    self.panes.maximize(pane);
+                    self.workspace.panes.maximize(pane);
                 }
                 Task::none()
             }
-            Message::ToggleFullscreen(pane) => {
-                if self.panes.get(pane).is_none() {
+            WorkspaceMessage::ToggleFullscreen(pane) => {
+                if self.workspace.panes.get(pane).is_none() {
                     return Task::none();
                 }
-                let fullscreen = toggled_fullscreen(self.fullscreen, pane);
+                let fullscreen = toggled_fullscreen(self.workspace.fullscreen, pane);
                 self.set_focus(pane);
-                self.fullscreen = fullscreen;
-                if self.fullscreen.is_some() {
+                self.workspace.fullscreen = fullscreen;
+                if self.workspace.fullscreen.is_some() {
                     self.sidebar.close_context();
-                    self.search = None;
-                    self.spell_correction = None;
-                    self.selection_menu = None;
-                    self.menu = None;
+                    self.ui.close_editor_overlays();
+                    self.ui.menu = None;
                 }
-                if matches!(self.panes.get(pane), Some(PaneKind::Editor(_))) {
-                    view::editor::focus(self.active)
+                if matches!(self.workspace.panes.get(pane), Some(PaneKind::Editor(_))) {
+                    view::editor::focus(self.workspace.active)
                 } else {
                     Task::none()
                 }
             }
-            Message::ClosePane(pane) => {
-                match self.panes.get(pane) {
+            WorkspaceMessage::ClosePane(pane) => {
+                match self.workspace.panes.get(pane) {
                     Some(PaneKind::Editor(id)) => {
                         let id = *id;
-                        if self.docs.get(&id).is_some_and(|d| d.modified) {
+                        if self.workspace.documents.get(&id).is_some_and(|d| d.modified) {
                             // Confirm before discarding unsaved changes; the
                             // dialog takes over, so don't refocus the editor.
-                            self.confirm = Some(PendingAction::ClosePane(pane));
+                            self.ui.confirm = Some(PendingAction::ClosePane(pane));
                             return Task::none();
                         }
                         self.close_pane(pane);
@@ -2496,39 +1976,40 @@ impl App {
                 }
                 // Closing moved focus to a sibling pane — give the editor the
                 // keyboard back so the cursor is live without a click.
-                view::editor::focus(self.active)
+                view::editor::focus(self.workspace.active)
             }
+            },
 
             Message::EscPressed => {
                 // ESC peels UI layers: dialog, error, find bar, sub-bar, bar,
                 // then opens the command bar.
-                if self.confirm.is_some() {
-                    self.confirm = None;
-                } else if self.selection_menu.is_some() {
-                    self.selection_menu = None;
-                    return view::editor::focus(self.active);
-                } else if self.spell_correction.is_some() {
-                    self.spell_correction = None;
-                    return view::editor::focus(self.active);
-                } else if self.open_picker {
-                    self.open_picker = false;
-                    return view::editor::focus(self.active);
+                if self.ui.confirm.is_some() {
+                    self.ui.confirm = None;
+                } else if self.ui.selection_menu.is_some() {
+                    self.ui.selection_menu = None;
+                    return view::editor::focus(self.workspace.active);
+                } else if self.ui.spell_correction.is_some() {
+                    self.ui.spell_correction = None;
+                    return view::editor::focus(self.workspace.active);
+                } else if self.ui.open_picker {
+                    self.ui.open_picker = false;
+                    return view::editor::focus(self.workspace.active);
                 } else if self.sidebar.context.is_some() {
                     self.sidebar.close_context();
-                    return view::editor::focus(self.active);
+                    return view::editor::focus(self.workspace.active);
                 } else if self.active_doc().compile_error.is_some() {
                     self.active_doc_mut().compile_error = None;
-                } else if self.search.is_some() {
-                    self.search = None;
-                    return view::editor::focus(self.active);
-                } else if self.fullscreen.take().is_some() {
-                    if matches!(self.panes.get(self.focused), Some(PaneKind::Editor(_))) {
-                        return view::editor::focus(self.active);
+                } else if self.ui.search.is_some() {
+                    self.ui.search = None;
+                    return view::editor::focus(self.workspace.active);
+                } else if self.workspace.fullscreen.take().is_some() {
+                    if matches!(self.workspace.panes.get(self.workspace.focused), Some(PaneKind::Editor(_))) {
+                        return view::editor::focus(self.workspace.active);
                     }
                 } else {
-                    match self.menu.take() {
+                    match self.ui.menu.take() {
                         // Root bar: close. Sub-views: back to the root bar.
-                        Some(Menu::Commands(_)) => return view::editor::focus(self.active),
+                        Some(Menu::Commands(_)) => return view::editor::focus(self.workspace.active),
                         Some(Menu::Theme(_)) => {
                             // Cancel any live preview: back to the saved theme.
                             self.theme = self.config.load_theme().0;
@@ -2547,11 +2028,11 @@ impl App {
             }
             Message::CommandSelected(command) => self.run_command(command),
             Message::CommandInput(input) => {
-                match &mut self.menu {
+                match &mut self.ui.menu {
                     Some(Menu::Commands(picker)) => {
                         // halloy-style shortcut: "?" jumps to the keybinds.
                         if input.trim() == "?" {
-                            self.menu = Some(Menu::Help);
+                            self.ui.menu = Some(Menu::Help);
                         } else {
                             picker.input = input;
                             picker.selected = 0;
@@ -2595,7 +2076,7 @@ impl App {
                             (picker.selected as isize + step).rem_euclid(len as isize) as usize;
                     }
                 };
-                match &mut self.menu {
+                match &mut self.ui.menu {
                     Some(Menu::Commands(picker)) => {
                         let len = filtered_commands(&picker.input).len();
                         select(picker, len);
@@ -2627,7 +2108,7 @@ impl App {
             }
             // ENTER in the filter input: act on the selected row.
             Message::MenuSubmit => {
-                let chosen = match &self.menu {
+                let chosen = match &self.ui.menu {
                     Some(Menu::Commands(picker)) => filtered_commands(&picker.input)
                         .get(picker.selected)
                         .copied()
@@ -2659,14 +2140,14 @@ impl App {
                 };
                 self.theme = self.config.load_theme().0;
                 self.save_config();
-                self.menu = None;
-                view::editor::focus(self.active)
+                self.ui.menu = None;
+                view::editor::focus(self.workspace.active)
             }
             Message::CompilerSelected(compiler) => {
                 self.config.latex_compiler = compiler;
                 self.save_config();
-                self.menu = None;
-                view::editor::focus(self.active)
+                self.ui.menu = None;
+                view::editor::focus(self.workspace.active)
             }
             Message::FontSelected(name) => {
                 self.config.editor_font = if name == core::config::BUILTIN_THEME {
@@ -2676,13 +2157,13 @@ impl App {
                 };
                 self.editor_font = resolve_font(&self.config.editor_font);
                 self.save_config();
-                self.menu = None;
-                view::editor::focus(self.active)
+                self.ui.menu = None;
+                view::editor::focus(self.workspace.active)
             }
             Message::SplitRatioChanged(ratio) => {
                 self.config.preview_split_ratio = ratio;
                 if let Some(split) = self.preview_split {
-                    self.panes.resize(split, ratio);
+                    self.workspace.panes.resize(split, ratio);
                 }
                 Task::none()
             }
@@ -2695,7 +2176,7 @@ impl App {
             Message::ToggleSidebar => {
                 self.sidebar.toggle_collapsed();
                 self.sidebar.close_context();
-                view::editor::focus(self.active)
+                view::editor::focus(self.workspace.active)
             }
             Message::ToggleDir(path) => {
                 self.sidebar.close_context();
@@ -2716,7 +2197,7 @@ impl App {
             }
             Message::CloseSidebarContext => {
                 self.sidebar.close_context();
-                view::editor::focus(self.active)
+                view::editor::focus(self.workspace.active)
             }
             Message::SidebarContextChangeDirectory => {
                 if let Some(path) = self.sidebar.context_directory() {
@@ -2778,31 +2259,27 @@ impl App {
                     let mut doc = Document::untitled();
                     doc.path = Some(path);
                     doc.modified = true;
-                    let id = self.next_id;
-                    self.next_id += 1;
-                    self.docs.insert(id, doc);
+                    let id = self.workspace.insert_document(doc);
                     self.spawn_editor(id);
                     self.set_status(format!("created {name} — CTRL+S to save"));
-                    view::editor::focus(self.active)
+                    view::editor::focus(self.workspace.active)
                 }
             }
 
             Message::NewFile => {
                 // A fresh scratch buffer in its own pane (CTRL+N).
-                let id = self.next_id;
-                self.next_id += 1;
-                self.docs.insert(id, Document::untitled());
+                let id = self.workspace.insert_document(Document::untitled());
                 self.spawn_editor(id);
                 self.set_status("new file");
-                view::editor::focus(self.active)
+                view::editor::focus(self.workspace.active)
             }
             Message::OpenFilePicker => {
                 self.sidebar.close_context();
-                self.open_picker = true;
+                self.ui.open_picker = true;
                 Task::none()
             }
             Message::ChooseFileToOpen => {
-                self.open_picker = false;
+                self.ui.open_picker = false;
                 let root = self.sidebar.root.clone();
                 Task::perform(
                     async move {
@@ -2816,7 +2293,7 @@ impl App {
                 )
             }
             Message::ChooseFolderToOpen => {
-                self.open_picker = false;
+                self.ui.open_picker = false;
                 let root = self.sidebar.root.clone();
                 Task::perform(
                     async move {
@@ -2830,8 +2307,8 @@ impl App {
                 )
             }
             Message::CloseOpenPicker => {
-                self.open_picker = false;
-                view::editor::focus(self.active)
+                self.ui.open_picker = false;
+                view::editor::focus(self.workspace.active)
             }
             Message::FilePicked(picked) => match picked {
                 Some(path) => self.open_file(path),
@@ -2843,23 +2320,25 @@ impl App {
                 }
                 Task::none()
             }
-            Message::CloseActivePane => self.update(Message::ClosePane(self.focused)),
+            Message::CloseActivePane => self.update(Message::Workspace(
+                WorkspaceMessage::ClosePane(self.workspace.focused),
+            )),
             Message::NextPane => self.cycle_pane(1),
             Message::PrevPane => self.cycle_pane(-1),
             Message::ToggleSearch => {
-                if self.search.take().is_some() {
+                if self.ui.search.take().is_some() {
                     // Second CTRL+F closes the bar and returns to the editor.
-                    view::editor::focus(self.active)
-                } else if self.menu.is_some()
-                    || self.spell_correction.is_some()
-                    || self.selection_menu.is_some()
-                    || self.confirm.is_some()
-                    || self.open_picker
+                    view::editor::focus(self.workspace.active)
+                } else if self.ui.menu.is_some()
+                    || self.ui.spell_correction.is_some()
+                    || self.ui.selection_menu.is_some()
+                    || self.ui.confirm.is_some()
+                    || self.ui.open_picker
                 {
                     Task::none() // don't pop find over a modal
                 } else {
                     let origin = self.active_doc().cursor_pos();
-                    self.search = Some(Search {
+                    self.ui.search = Some(Search {
                         origin,
                         ..Search::default()
                     });
@@ -2879,27 +2358,27 @@ impl App {
                 Task::none()
             }
             Message::CloseSearch => {
-                self.search = None;
-                view::editor::focus(self.active)
+                self.ui.search = None;
+                view::editor::focus(self.workspace.active)
             }
 
             Message::CloseRequested => {
-                if self.docs.values().any(|d| d.modified) {
-                    self.confirm = Some(PendingAction::CloseWindow);
+                if self.workspace.documents.values().any(|d| d.modified) {
+                    self.ui.confirm = Some(PendingAction::CloseWindow);
                     Task::none()
                 } else {
                     iced::exit()
                 }
             }
             Message::ConfirmSave => {
-                let Some(action) = self.confirm.take() else {
+                let Some(action) = self.ui.confirm.take() else {
                     return Task::none();
                 };
                 match action {
                     PendingAction::CloseWindow => {
                         // Save every modified document, then exit.
                         let mut failed = None;
-                        for doc in self.docs.values_mut().filter(|d| d.modified) {
+                        for doc in self.workspace.documents.values_mut().filter(|d| d.modified) {
                             if let Err(e) = doc.save() {
                                 failed = Some(e);
                                 break;
@@ -2914,14 +2393,14 @@ impl App {
                         }
                     }
                     PendingAction::ClosePane(pane) => {
-                        let id = match self.panes.get(pane) {
+                        let id = match self.workspace.panes.get(pane) {
                             Some(PaneKind::Editor(id)) => *id,
                             _ => return Task::none(),
                         };
-                        match self.docs.get_mut(&id).map(|d| d.save()) {
+                        match self.workspace.documents.get_mut(&id).map(|d| d.save()) {
                             Some(Ok(_)) => {
                                 self.close_pane(pane);
-                                view::editor::focus(self.active)
+                                view::editor::focus(self.workspace.active)
                             }
                             Some(Err(e)) => {
                                 self.set_status(format!("save failed: {e}"));
@@ -2933,26 +2412,26 @@ impl App {
                 }
             }
             Message::ConfirmDiscard => {
-                let Some(action) = self.confirm.take() else {
+                let Some(action) = self.ui.confirm.take() else {
                     return Task::none();
                 };
                 match action {
                     PendingAction::CloseWindow => iced::exit(),
                     PendingAction::ClosePane(pane) => {
                         self.close_pane(pane);
-                        view::editor::focus(self.active)
+                        view::editor::focus(self.workspace.active)
                     }
                 }
             }
             Message::ConfirmCancel => {
-                self.confirm = None;
-                view::editor::focus(self.active)
+                self.ui.confirm = None;
+                view::editor::focus(self.workspace.active)
             }
             Message::Tick => {
-                if let Some((_, since)) = &self.status
+                if let Some((_, since)) = &self.ui.status
                     && since.elapsed() > STATUS_TTL
                 {
-                    self.status = None;
+                    self.ui.status = None;
                 }
                 self.poll_config()
             }
@@ -2973,81 +2452,17 @@ fn to_page(img: ::image::DynamicImage) -> PdfPage {
 mod tests {
     use iced::widget::pane_grid;
 
-    use super::{
-        Document, PaneKind, SelectionFormat, formatted_selection, fullscreen_following_focus,
-        selection_span, toggled_fullscreen,
-    };
-    use crate::core::spell::SpellIssue;
-    use crate::view::widget::text_editor;
+    use super::{PaneKind, toggled_fullscreen};
 
     #[test]
     fn fullscreen_toggles_and_follows_pane_focus() {
         let (mut panes, first) = pane_grid::State::new(PaneKind::Editor(0));
-        let (second, _) = panes
+        let (_second, _) = panes
             .split(pane_grid::Axis::Vertical, first, PaneKind::Editor(1))
             .unwrap();
 
         assert_eq!(toggled_fullscreen(None, first), Some(first));
         assert_eq!(toggled_fullscreen(Some(first), first), None);
-        assert_eq!(fullscreen_following_focus(Some(first), second), Some(second));
-        assert_eq!(fullscreen_following_focus(None, second), None);
     }
 
-    #[test]
-    fn markdown_selection_formats_wrap_without_changing_the_text() {
-        assert_eq!(
-            formatted_selection(SelectionFormat::Bold, "quiet"),
-            "**quiet**"
-        );
-        assert_eq!(
-            formatted_selection(SelectionFormat::Italic, "quiet"),
-            "*quiet*"
-        );
-        assert_eq!(
-            formatted_selection(SelectionFormat::Underline, "quiet"),
-            "<u>quiet</u>"
-        );
-    }
-
-    #[test]
-    fn selection_span_uses_the_word_containing_the_click_anchor() {
-        let lines = vec!["quiet then quiet".to_string()];
-        let cursor = text_editor::Cursor {
-            position: text_editor::Position { line: 0, column: 13 },
-            selection: Some(text_editor::Position { line: 0, column: 13 }),
-        };
-        assert_eq!(selection_span(&lines, cursor, "quiet"), Some(((0, 11), (0, 16))));
-    }
-
-    #[test]
-    fn spelling_correction_is_one_undoable_edit() {
-        let mut doc = Document::untitled();
-        doc.content = text_editor::Content::with_text("hello wurld");
-        doc.replace_span((0, 6), (0, 11), "world".to_string());
-        assert_eq!(doc.content.text(), "hello world");
-
-        let current = doc.snapshot();
-        let previous = doc.history.undo(current).unwrap();
-        doc.restore(previous);
-        assert_eq!(doc.content.text(), "hello wurld");
-    }
-
-    #[test]
-    fn spelling_invalidation_clears_stale_spans_and_waits_for_phantoms() {
-        let mut doc = Document::untitled();
-        doc.spell_issues.push(SpellIssue {
-            start: (0, 0),
-            end: (0, 5),
-            word: "wurld".to_string(),
-        });
-        let revision = doc.spell_revision;
-        doc.invalidate_spelling(true);
-        assert!(doc.spell_issues.is_empty());
-        assert_ne!(doc.spell_revision, revision);
-        assert!(doc.spell_dirty_since.is_some());
-
-        doc.phantom = Some("ghost".to_string());
-        doc.invalidate_spelling(true);
-        assert!(doc.spell_dirty_since.is_none());
-    }
 }

@@ -8,7 +8,11 @@
 
 mod app;
 mod core;
+mod document;
+mod selection;
+mod ui_state;
 mod view;
+mod workspace;
 
 use crate::app::App;
 
