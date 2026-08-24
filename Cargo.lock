@@ -1054,7 +1054,7 @@ dependencies = [
 
 [[package]]
 name = "flow-state"
-version = "0.1.0"
+version = "0.1.45"
 dependencies = [
  "anyhow",
  "dirs",
