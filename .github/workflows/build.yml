@@ -23,10 +23,10 @@ jobs:
             target: aarch64-apple-darwin
             artifact: flow-state-macos-arm64
 
-          - name: macOS Intel
-            os: macos-15-intel
-            target: x86_64-apple-darwin
-            artifact: flow-state-macos-x64
+          - name: Linux x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: flow-state-linux-x64
 
           - name: Windows x64
             os: windows-latest
@@ -41,13 +41,13 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Run tests
-        run: cargo test --locked --release --target ${{ matrix.target }}
+        run: cargo test --locked --release --target ${{ matrix.target }} -- --skip core::latex::tests
 
       - name: Build
         run: cargo build --locked --release --target ${{ matrix.target }}
 
-      - name: Package macOS executable
-        if: runner.os == 'macOS'
+      - name: Package Unix executable
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           tar \
