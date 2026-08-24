@@ -69,7 +69,7 @@
         </Directory>
       </Directory>
 
-      <Directory Id='ProgramMenuFolder'>
+      <Directory Id='CommonProgramsFolder'>
         <Directory Id='ApplicationProgramsFolder' Name='Flow State'/>
       </Directory>
     </Directory>
@@ -85,7 +85,7 @@
             Icon='ProductICO'/>
         <RemoveFolder Id='ApplicationProgramsFolder' On='uninstall'/>
         <RegistryValue
-            Root='HKMU'
+            Root='HKLM'
             Key='Software\Rohanator2314\Flow State'
             Name='installed'
             Type='integer'
