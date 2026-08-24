@@ -84,6 +84,7 @@ pub enum Message {
     PaneResized(pane_grid::ResizeEvent),
     PaneClicked(pane_grid::Pane),
     ToggleMaximize(pane_grid::Pane),
+    ToggleFullscreen(pane_grid::Pane),
     ClosePane(pane_grid::Pane),
     // sidebar
     ToggleSidebar,
@@ -284,6 +285,31 @@ fn on_escape(
     .then_some(Message::EscPressed)
 }
 
+/// CTRL+TAB fallback while fullscreen. The editor handles the shortcut itself;
+/// this catches it only when the fullscreen pane (notably preview) ignored it.
+fn on_fullscreen_pane_cycle(
+    event: iced::Event,
+    status: iced::event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    use iced::keyboard::{Event, Key, key::Named};
+    if status != iced::event::Status::Ignored {
+        return None;
+    }
+    match event {
+        iced::Event::Keyboard(Event::KeyPressed {
+            key: Key::Named(Named::Tab),
+            modifiers,
+            ..
+        }) if modifiers.control() => Some(if modifiers.shift() {
+            Message::PrevPane
+        } else {
+            Message::NextPane
+        }),
+        _ => None,
+    }
+}
+
 /// Subscription filter: arrow keys drive the command-bar selection.
 fn on_menu_arrows(
     event: iced::Event,
@@ -401,6 +427,20 @@ impl std::fmt::Display for Command {
 pub enum PaneKind {
     Editor(DocId),
     Preview,
+}
+
+fn toggled_fullscreen(
+    current: Option<pane_grid::Pane>,
+    target: pane_grid::Pane,
+) -> Option<pane_grid::Pane> {
+    (current != Some(target)).then_some(target)
+}
+
+fn fullscreen_following_focus(
+    current: Option<pane_grid::Pane>,
+    focused: pane_grid::Pane,
+) -> Option<pane_grid::Pane> {
+    current.map(|_| focused)
 }
 
 /// The open file: its text (owned by iced's editor), undo history, path, and
@@ -721,6 +761,8 @@ pub struct App {
     pub panes: pane_grid::State<PaneKind>,
     /// The pane that last received a click; gets the highlighted border.
     pub focused: pane_grid::Pane,
+    /// The pane shown without any application chrome.
+    pub fullscreen: Option<pane_grid::Pane>,
     pub sidebar: Sidebar,
     pub confirm: Option<PendingAction>,
     /// File-or-folder choice shown before CTRL+O launches a native picker.
@@ -771,6 +813,7 @@ impl App {
             user_scrolled: false,
             panes,
             focused: first,
+            fullscreen: None,
             sidebar: Sidebar::new(PathBuf::from(".")),
             confirm: None,
             open_picker: false,
@@ -857,6 +900,9 @@ impl App {
         }
         if self.spell_correction.is_some() {
             subs.push(iced::event::listen_with(on_spell_arrows));
+        }
+        if self.fullscreen.is_some() {
+            subs.push(iced::event::listen_with(on_fullscreen_pane_cycle));
         }
         // Per-frame ticks only while a centering animation is converging — no
         // idle repaint when the active paragraph is already centered.
@@ -1349,6 +1395,7 @@ impl App {
     /// editor, so the preview keeps showing it.
     fn set_focus(&mut self, pane: pane_grid::Pane) {
         self.focused = pane;
+        self.fullscreen = fullscreen_following_focus(self.fullscreen, pane);
         if let Some(PaneKind::Editor(id)) = self.panes.get(pane) {
             self.active = *id;
         }
@@ -2168,6 +2215,25 @@ impl App {
                 }
                 Task::none()
             }
+            Message::ToggleFullscreen(pane) => {
+                if self.panes.get(pane).is_none() {
+                    return Task::none();
+                }
+                let fullscreen = toggled_fullscreen(self.fullscreen, pane);
+                self.set_focus(pane);
+                self.fullscreen = fullscreen;
+                if self.fullscreen.is_some() {
+                    self.sidebar.close_context();
+                    self.search = None;
+                    self.spell_correction = None;
+                    self.menu = None;
+                }
+                if matches!(self.panes.get(pane), Some(PaneKind::Editor(_))) {
+                    view::editor::focus(self.active)
+                } else {
+                    Task::none()
+                }
+            }
             Message::ClosePane(pane) => {
                 match self.panes.get(pane) {
                     Some(PaneKind::Editor(id)) => {
@@ -2207,6 +2273,10 @@ impl App {
                 } else if self.search.is_some() {
                     self.search = None;
                     return view::editor::focus(self.active);
+                } else if self.fullscreen.take().is_some() {
+                    if matches!(self.panes.get(self.focused), Some(PaneKind::Editor(_))) {
+                        return view::editor::focus(self.active);
+                    }
                 } else {
                     match self.menu.take() {
                         // Root bar: close. Sub-views: back to the root bar.
@@ -2652,9 +2722,24 @@ fn to_page(img: ::image::DynamicImage) -> PdfPage {
 
 #[cfg(test)]
 mod tests {
-    use super::Document;
+    use iced::widget::pane_grid;
+
+    use super::{Document, PaneKind, fullscreen_following_focus, toggled_fullscreen};
     use crate::core::spell::SpellIssue;
     use crate::view::widget::text_editor;
+
+    #[test]
+    fn fullscreen_toggles_and_follows_pane_focus() {
+        let (mut panes, first) = pane_grid::State::new(PaneKind::Editor(0));
+        let (second, _) = panes
+            .split(pane_grid::Axis::Vertical, first, PaneKind::Editor(1))
+            .unwrap();
+
+        assert_eq!(toggled_fullscreen(None, first), Some(first));
+        assert_eq!(toggled_fullscreen(Some(first), first), None);
+        assert_eq!(fullscreen_following_focus(Some(first), second), Some(second));
+        assert_eq!(fullscreen_following_focus(None, second), None);
+    }
 
     #[test]
     fn spelling_correction_is_one_undoable_edit() {

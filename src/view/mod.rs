@@ -32,35 +32,10 @@ use crate::app::{App, Message, PaneKind};
 const GAP: f32 = 6.0;
 
 pub fn view(app: &App) -> Element<'_, Message> {
-    let theme = &app.theme;
-
-    let grid = pane_grid(&app.panes, |pane, kind, maximized| {
-        let is_focused = pane == app.focused;
-        let body: Element<'_, Message> = match kind {
-            PaneKind::Editor(id) => editor::view(app, *id),
-            PaneKind::Preview => preview::view(app),
-        };
-        pane_grid::Content::new(body)
-            .style(move |_| pane_body(theme, is_focused))
-            .title_bar(title_bar(app, *kind, pane, maximized, is_focused))
-    })
-    .spacing(GAP)
-    .on_click(Message::PaneClicked)
-    .on_drag(Message::PaneDragged)
-    .on_resize(8, Message::PaneResized);
-
-    let shell = container(grid)
-        .padding(Padding::new(GAP))
-        .style(move |_| container::Style {
-            background: Some(Background::Color(theme.surface)),
-            ..container::Style::default()
-        });
-
-    let base: Element<'_, Message> = column![
-        row![sidebar::view(app), shell].height(Fill),
-        status_bar(app)
-    ]
-    .into();
+    let base = app
+        .fullscreen
+        .and_then(|pane| fullscreen_pane(app, pane))
+        .unwrap_or_else(|| workspace(app));
 
     // The root is ALWAYS a stack with `base` at layer 0, even with no overlays.
     // Keeping the root widget type and `base`'s position stable means iced never
@@ -107,6 +82,58 @@ pub fn view(app: &App) -> Element<'_, Message> {
     }
 
     stack(layers).width(Fill).height(Fill).into()
+}
+
+fn workspace(app: &App) -> Element<'_, Message> {
+    let theme = &app.theme;
+
+    let grid = pane_grid(&app.panes, |pane, kind, maximized| {
+        let is_focused = pane == app.focused;
+        let body: Element<'_, Message> = match kind {
+            PaneKind::Editor(id) => editor::view(app, *id),
+            PaneKind::Preview => preview::view(app),
+        };
+        pane_grid::Content::new(body)
+            .style(move |_| pane_body(theme, is_focused))
+            .title_bar(title_bar(app, *kind, pane, maximized, is_focused))
+    })
+    .spacing(GAP)
+    .on_click(Message::PaneClicked)
+    .on_drag(Message::PaneDragged)
+    .on_resize(8, Message::PaneResized);
+
+    let shell = container(grid)
+        .padding(Padding::new(GAP))
+        .style(move |_| container::Style {
+            background: Some(Background::Color(theme.surface)),
+            ..container::Style::default()
+        });
+
+    let base: Element<'_, Message> = column![
+        row![sidebar::view(app), shell].height(Fill),
+        status_bar(app)
+    ]
+    .into();
+
+    base
+}
+
+fn fullscreen_pane(app: &App, pane: pane_grid::Pane) -> Option<Element<'_, Message>> {
+    let body = match app.panes.get(pane)? {
+        PaneKind::Editor(id) => editor::view(app, *id),
+        PaneKind::Preview => preview::view(app),
+    };
+    let background = app.theme.background;
+    Some(
+        container(body)
+            .width(Fill)
+            .height(Fill)
+            .style(move |_| container::Style {
+                background: Some(Background::Color(background)),
+                ..container::Style::default()
+            })
+            .into(),
+    )
 }
 
 /// Pane body card: rounded, 1px border, highlighted when focused.
@@ -159,6 +186,7 @@ fn title_bar<'a>(
         theme,
     )]
     .spacing(2);
+    controls = controls.push(fullscreen_button(pane, dim, theme));
     // The preview pane closes (and reopens on save); editor panes close once
     // there's more than one (there must always be a document to edit).
     let closable = match kind {
@@ -207,6 +235,20 @@ fn control_button<'a>(
         .width(22)
         .height(22)
         .on_press(message)
+        .style(style::bare_button(theme))
+}
+
+/// Text-labeled fullscreen action: compact, but unambiguous in every font.
+fn fullscreen_button<'a>(
+    pane: pane_grid::Pane,
+    color: Color,
+    theme: &crate::core::theme::Theme,
+) -> iced::widget::Button<'a, Message> {
+    button(center(text("full").size(10).color(color)))
+        .padding(2)
+        .width(34)
+        .height(22)
+        .on_press(Message::ToggleFullscreen(pane))
         .style(style::bare_button(theme))
 }
 
