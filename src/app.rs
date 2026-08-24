@@ -39,6 +39,63 @@ const SPELL_DEBOUNCE: Duration = Duration::from_millis(350);
 /// reused, so a stale id simply finds nothing.
 pub type DocId = usize;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionFormat {
+    Bold,
+    Italic,
+    Underline,
+}
+
+#[derive(Debug, Clone)]
+pub struct SelectionMenu {
+    pub doc_id: DocId,
+    pub position: iced::Point,
+    pub selected: String,
+    start: text::Pos,
+    end: text::Pos,
+}
+
+fn formatted_selection(format: SelectionFormat, selected: &str) -> String {
+    match format {
+        SelectionFormat::Bold => format!("**{selected}**"),
+        SelectionFormat::Italic => format!("*{selected}*"),
+        // CommonMark has no underline syntax; inline HTML is interoperable.
+        SelectionFormat::Underline => format!("<u>{selected}</u>"),
+    }
+}
+
+fn selection_span(
+    lines: &[String],
+    cursor: text_editor::Cursor,
+    selected: &str,
+) -> Option<(text::Pos, text::Pos)> {
+    let selected = selected.replace("\r\n", "\n").replace('\r', "\n");
+    let joined = lines.join("\n");
+    let absolute = |position: text_editor::Position| {
+        lines.iter().take(position.line).map(|line| line.len() + 1).sum::<usize>()
+            + position.column
+    };
+    let anchor = cursor.selection?;
+    let low = absolute(cursor.position).min(absolute(anchor));
+    let high = absolute(cursor.position).max(absolute(anchor));
+    let (start_offset, _) = joined
+        .match_indices(&selected)
+        .find(|(start, value)| *start <= low && start + value.len() >= high)?;
+    let end_offset = start_offset + selected.len();
+    let position = |offset: usize| {
+        let mut base = 0;
+        for (line, value) in lines.iter().enumerate() {
+            if offset <= base + value.len() {
+                return (line, offset - base);
+            }
+            base += value.len() + 1;
+        }
+        let line = lines.len().saturating_sub(1);
+        (line, lines.get(line).map_or(0, String::len))
+    };
+    Some((position(start_offset), position(end_offset)))
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     // editor (an edit targets a specific pane's document)
@@ -51,6 +108,14 @@ pub enum Message {
     PhantomAccept,
     NextParagraph,
     PrevParagraph,
+    OpenSelectionMenu(DocId, iced::Point, iced::Size),
+    CloseSelectionMenu,
+    SelectionCopy,
+    SelectionCut,
+    SelectionPaste,
+    SelectionPasteReady(DocId, String, Option<String>),
+    SelectionSpellCorrect,
+    SelectionFormat(SelectionFormat),
     // spell checking/correction
     SpellDictionaryLoaded(u64, Result<LoadedDictionary, String>),
     SpellTick,
@@ -771,6 +836,8 @@ pub struct App {
     pub search: Option<Search>,
     /// The CTRL+. correction chooser, when open.
     pub spell_correction: Option<SpellCorrection>,
+    /// The contextual actions for the current editor selection.
+    pub selection_menu: Option<SelectionMenu>,
     /// Parsed dictionary shared by background scans and suggestion jobs.
     spell_dictionary: Option<Arc<RwLock<spellbook::Dictionary>>>,
     spell_loading: bool,
@@ -819,6 +886,7 @@ impl App {
             open_picker: false,
             search: None,
             spell_correction: None,
+            selection_menu: None,
             spell_dictionary: None,
             spell_loading: false,
             spell_load_revision: 0,
@@ -845,6 +913,53 @@ impl App {
 
     fn active_doc_mut(&mut self) -> &mut Document {
         self.docs.get_mut(&self.active).expect("active doc exists")
+    }
+
+    pub fn selection_is_markdown(&self) -> bool {
+        self.selection_menu.as_ref().is_some_and(|menu| {
+            self.docs
+                .get(&menu.doc_id)
+                .is_some_and(|doc| doc.kind() == FileKind::Markdown)
+        })
+    }
+
+    pub fn selection_can_spell_correct(&self) -> bool {
+        let Some(menu) = &self.selection_menu else {
+            return false;
+        };
+        let Some(doc) = self.docs.get(&menu.doc_id) else {
+            return false;
+        };
+        self.config.spell_check
+            && self.spell_dictionary.is_some()
+            && doc
+                .spell_issues
+                .iter()
+                .any(|issue| issue.start == menu.start && issue.end == menu.end)
+    }
+
+    fn current_selection(&self) -> Option<(DocId, String)> {
+        let menu = self.selection_menu.as_ref()?;
+        let doc = self.docs.get(&menu.doc_id)?;
+        (text::slice(&doc.lines(), menu.start, menu.end) == menu.selected)
+            .then_some((menu.doc_id, menu.selected.clone()))
+    }
+
+    fn restore_selection_target(&mut self) -> Option<DocId> {
+        let menu = self.selection_menu.as_ref()?.clone();
+        self.current_selection()?;
+        let doc = self.docs.get_mut(&menu.doc_id)?;
+        doc.content.move_to(text_editor::Cursor {
+            position: text_editor::Position {
+                line: menu.end.0,
+                column: menu.end.1,
+            },
+            selection: Some(text_editor::Position {
+                line: menu.start.0,
+                column: menu.start.1,
+            }),
+        });
+        Some(menu.doc_id)
     }
 
     /// The pane currently showing document `id`, if any.
@@ -1787,6 +1902,7 @@ impl App {
     fn update_inner(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Edit(id, action) => {
+                self.selection_menu = None;
                 // An edit/click in a pane makes its document the focused one.
                 if let Some(pane) = self.pane_of_doc(id) {
                     self.set_focus(pane);
@@ -1873,6 +1989,133 @@ impl App {
                 }
                 doc.content.perform(action);
                 Task::none()
+            }
+            Message::OpenSelectionMenu(id, position, bounds) => {
+                let Some((selected, start, end)) = self.docs.get(&id).and_then(|doc| {
+                    let selected = doc.content.selection()?.replace("\r\n", "\n").replace('\r', "\n");
+                    if selected.is_empty() {
+                        return None;
+                    }
+                    let (start, end) = selection_span(&doc.lines(), doc.content.cursor(), &selected)?;
+                    Some((selected, start, end))
+                })
+                else {
+                    self.selection_menu = None;
+                    return Task::none();
+                };
+                if let Some(pane) = self.pane_of_doc(id) {
+                    self.set_focus(pane);
+                }
+                self.search = None;
+                self.spell_correction = None;
+                self.menu = None;
+                self.sidebar.close_context();
+                let width = 196.0_f32.min((bounds.width - 16.0).max(0.0));
+                let height = 278.0_f32.min((bounds.height - 16.0).max(0.0));
+                let position = iced::Point::new(
+                    (position.x + 6.0).clamp(8.0, (bounds.width - width - 8.0).max(8.0)),
+                    (position.y + 6.0).clamp(8.0, (bounds.height - height - 8.0).max(8.0)),
+                );
+                self.selection_menu = Some(SelectionMenu {
+                    doc_id: id,
+                    position,
+                    selected,
+                    start,
+                    end,
+                });
+                Task::none()
+            }
+            Message::CloseSelectionMenu => {
+                self.selection_menu = None;
+                view::editor::focus(self.active)
+            }
+            Message::SelectionCopy => {
+                let Some((id, selected)) = self.current_selection() else {
+                    self.selection_menu = None;
+                    return Task::none();
+                };
+                self.active = id;
+                self.selection_menu = None;
+                Task::batch([iced::clipboard::write(selected), view::editor::focus(id)])
+            }
+            Message::SelectionCut => {
+                let Some((id, selected)) = self.current_selection() else {
+                    self.selection_menu = None;
+                    return Task::none();
+                };
+                self.restore_selection_target();
+                self.active = id;
+                self.selection_menu = None;
+                Task::batch([
+                    iced::clipboard::write(selected),
+                    self.update(Message::Edit(
+                        id,
+                        text_editor::Action::Edit(text_editor::Edit::Delete),
+                    )),
+                    view::editor::focus(id),
+                ])
+            }
+            Message::SelectionPaste => {
+                let Some((id, selected)) = self.current_selection() else {
+                    self.selection_menu = None;
+                    return Task::none();
+                };
+                self.restore_selection_target();
+                self.active = id;
+                self.selection_menu = None;
+                iced::clipboard::read().map(move |contents| {
+                    Message::SelectionPasteReady(id, selected.clone(), contents)
+                })
+            }
+            Message::SelectionPasteReady(id, selected, contents) => {
+                if self
+                    .docs
+                    .get(&id)
+                    .and_then(|doc| doc.content.selection())
+                    .as_deref()
+                    != Some(selected.as_str())
+                {
+                    return Task::none();
+                }
+                let Some(contents) = contents else {
+                    self.set_status("clipboard is empty");
+                    return view::editor::focus(self.active);
+                };
+                self.update(Message::Edit(
+                    id,
+                    text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(contents))),
+                ))
+            }
+            Message::SelectionSpellCorrect => {
+                if !self.selection_can_spell_correct() {
+                    return Task::none();
+                }
+                let id = self.selection_menu.as_ref().expect("checked above").doc_id;
+                self.restore_selection_target();
+                self.active = id;
+                self.selection_menu = None;
+                self.open_spell_correction()
+            }
+            Message::SelectionFormat(format) => {
+                let Some((id, selected)) = self.current_selection() else {
+                    self.selection_menu = None;
+                    return Task::none();
+                };
+                if self
+                    .docs
+                    .get(&id)
+                    .is_none_or(|doc| doc.kind() != FileKind::Markdown)
+                {
+                    return Task::none();
+                }
+                self.restore_selection_target();
+                let replacement = formatted_selection(format, &selected);
+                self.active = id;
+                self.selection_menu = None;
+                self.update(Message::Edit(
+                    id,
+                    text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(replacement))),
+                ))
             }
             Message::Save => self.save(),
             Message::Undo => {
@@ -2204,6 +2447,7 @@ impl App {
                 Task::none()
             }
             Message::PaneClicked(pane) => {
+                self.selection_menu = None;
                 self.set_focus(pane);
                 Task::none()
             }
@@ -2226,6 +2470,7 @@ impl App {
                     self.sidebar.close_context();
                     self.search = None;
                     self.spell_correction = None;
+                    self.selection_menu = None;
                     self.menu = None;
                 }
                 if matches!(self.panes.get(pane), Some(PaneKind::Editor(_))) {
@@ -2259,6 +2504,9 @@ impl App {
                 // then opens the command bar.
                 if self.confirm.is_some() {
                     self.confirm = None;
+                } else if self.selection_menu.is_some() {
+                    self.selection_menu = None;
+                    return view::editor::focus(self.active);
                 } else if self.spell_correction.is_some() {
                     self.spell_correction = None;
                     return view::editor::focus(self.active);
@@ -2604,6 +2852,7 @@ impl App {
                     view::editor::focus(self.active)
                 } else if self.menu.is_some()
                     || self.spell_correction.is_some()
+                    || self.selection_menu.is_some()
                     || self.confirm.is_some()
                     || self.open_picker
                 {
@@ -2724,7 +2973,10 @@ fn to_page(img: ::image::DynamicImage) -> PdfPage {
 mod tests {
     use iced::widget::pane_grid;
 
-    use super::{Document, PaneKind, fullscreen_following_focus, toggled_fullscreen};
+    use super::{
+        Document, PaneKind, SelectionFormat, formatted_selection, fullscreen_following_focus,
+        selection_span, toggled_fullscreen,
+    };
     use crate::core::spell::SpellIssue;
     use crate::view::widget::text_editor;
 
@@ -2739,6 +2991,32 @@ mod tests {
         assert_eq!(toggled_fullscreen(Some(first), first), None);
         assert_eq!(fullscreen_following_focus(Some(first), second), Some(second));
         assert_eq!(fullscreen_following_focus(None, second), None);
+    }
+
+    #[test]
+    fn markdown_selection_formats_wrap_without_changing_the_text() {
+        assert_eq!(
+            formatted_selection(SelectionFormat::Bold, "quiet"),
+            "**quiet**"
+        );
+        assert_eq!(
+            formatted_selection(SelectionFormat::Italic, "quiet"),
+            "*quiet*"
+        );
+        assert_eq!(
+            formatted_selection(SelectionFormat::Underline, "quiet"),
+            "<u>quiet</u>"
+        );
+    }
+
+    #[test]
+    fn selection_span_uses_the_word_containing_the_click_anchor() {
+        let lines = vec!["quiet then quiet".to_string()];
+        let cursor = text_editor::Cursor {
+            position: text_editor::Position { line: 0, column: 13 },
+            selection: Some(text_editor::Position { line: 0, column: 13 }),
+        };
+        assert_eq!(selection_span(&lines, cursor, "quiet"), Some(((0, 11), (0, 16))));
     }
 
     #[test]

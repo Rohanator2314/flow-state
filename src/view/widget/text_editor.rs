@@ -107,6 +107,8 @@ pub struct TextEditor<
     class: Theme::Class<'a>,
     key_binding: Option<Box<dyn Fn(KeyPress) -> Option<Binding<Message>> + 'a>>,
     on_edit: Option<Box<dyn Fn(Action) -> Message + 'a>>,
+    // flow-state: right-clicking a selection can open an editor-local menu.
+    on_context_menu: Option<Box<dyn Fn(Point, Size) -> Message + 'a>>,
     highlighter_settings: Highlighter::Settings,
     highlighter_format: fn(
         &Highlighter::Highlight,
@@ -158,6 +160,7 @@ where
             class: <Theme as Catalog>::default(),
             key_binding: None,
             on_edit: None,
+            on_context_menu: None,
             highlighter_settings: (),
             highlighter_format: |_highlight, _theme| {
                 highlighter::Format::default()
@@ -223,6 +226,15 @@ where
         on_edit: impl Fn(Action) -> Message + 'a,
     ) -> Self {
         self.on_edit = Some(Box::new(on_edit));
+        self
+    }
+
+    /// Sets the message produced by a right click inside the editor.
+    pub fn on_context_menu(
+        mut self,
+        on_context_menu: impl Fn(Point, Size) -> Message + 'a,
+    ) -> Self {
+        self.on_context_menu = Some(Box::new(on_context_menu));
         self
     }
 
@@ -314,6 +326,7 @@ where
             class: self.class,
             key_binding: self.key_binding,
             on_edit: self.on_edit,
+            on_context_menu: self.on_context_menu,
             highlighter_settings: settings,
             highlighter_format: to_format,
             last_status: self.last_status,
@@ -785,6 +798,12 @@ where
                 }
                 Update::Release => {
                     state.drag_click = None;
+                }
+                Update::ContextMenu(position, size) => {
+                    if let Some(on_context_menu) = &self.on_context_menu {
+                        shell.publish(on_context_menu(position, size));
+                        shell.capture_event();
+                    }
                 }
                 Update::Scroll(lines) => {
                     let bounds = self.content.0.borrow().editor.bounds();
@@ -1321,6 +1340,7 @@ enum Update<Message> {
     Click(mouse::Click),
     Drag(Point),
     Release,
+    ContextMenu(Point, Size),
     Scroll(f32),
     InputMethod(Ime),
     Binding(Binding<Message>),
@@ -1333,6 +1353,10 @@ enum Ime {
         selection: Option<ops::Range<usize>>,
     },
     Commit(String),
+}
+
+fn supports_drag_selection(kind: mouse::click::Kind) -> bool {
+    matches!(kind, mouse::click::Kind::Single | mouse::click::Kind::Double)
 }
 
 impl<Message> Update<Message> {
@@ -1369,8 +1393,11 @@ impl<Message> Update<Message> {
                 mouse::Event::ButtonReleased(mouse::Button::Left) => {
                     Some(Update::Release)
                 }
+                mouse::Event::ButtonPressed(mouse::Button::Right) => cursor
+                    .position_in(bounds)
+                    .map(|position| Update::ContextMenu(position, bounds.size())),
                 mouse::Event::CursorMoved { .. } => match state.drag_click {
-                    Some(mouse::click::Kind::Single) => {
+                    Some(kind) if supports_drag_selection(kind) => {
                         let cursor_position = cursor.position_in(bounds)?
                             - Vector::new(padding.left, padding.top);
 
@@ -1563,6 +1590,18 @@ pub fn default(theme: &Theme, status: Status) -> Style {
             placeholder: palette.background.strongest.color,
             ..active
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mouse, supports_drag_selection};
+
+    #[test]
+    fn single_and_double_click_selections_can_be_dragged() {
+        assert!(supports_drag_selection(mouse::click::Kind::Single));
+        assert!(supports_drag_selection(mouse::click::Kind::Double));
+        assert!(!supports_drag_selection(mouse::click::Kind::Triple));
     }
 }
 

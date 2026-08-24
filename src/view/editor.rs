@@ -27,12 +27,13 @@ use iced::keyboard::Key;
 use crate::view::widget::text_editor::{
     self, Binding, DecorationQuad, KeyPress, Motion, TextEditor,
 };
-use iced::{Background, Border, Color, Element, Fill, Rectangle, Task};
+use iced::widget::{container, mouse_area, stack};
+use iced::{Background, Border, Color, Element, Fill, Padding, Rectangle, Task};
 
 use crate::app::{App, DocId, Message};
 use crate::core::text::{self, Pos};
 use crate::core::center;
-use crate::view::decoration;
+use crate::view::{decoration, selection_menu};
 
 /// Thickness of the accent emphasis underline, in pixels.
 const UNDERLINE_THICKNESS: f32 = 1.5;
@@ -176,9 +177,10 @@ pub fn view(app: &App, id: DocId) -> Element<'_, Message> {
         Vec::new()
     };
 
-    TextEditor::new(&doc.content)
+    let editor: Element<'_, Message> = TextEditor::new(&doc.content)
         .id(editor_id(id))
         .on_action(move |action| Message::Edit(id, action))
+        .on_context_menu(move |position, bounds| Message::OpenSelectionMenu(id, position, bounds))
         .key_binding(key_binding)
         .decorations(decorations)
         .highlight_with::<DimHighlighter>(settings, |highlight, _theme| Format {
@@ -203,7 +205,27 @@ pub fn view(app: &App, id: DocId) -> Element<'_, Message> {
                 },
             }
         })
-        .into()
+        .into();
+
+    let mut layers = vec![editor];
+    if let Some(menu) = app.selection_menu.as_ref().filter(|menu| menu.doc_id == id) {
+        layers.push(
+            mouse_area(
+                container(selection_menu::view(app))
+                    .width(Fill)
+                    .height(Fill)
+                    .padding(Padding {
+                        top: menu.position.y,
+                        right: 0.0,
+                        bottom: 0.0,
+                        left: menu.position.x,
+                    }),
+            )
+                .on_press(Message::CloseSelectionMenu)
+                .into(),
+        );
+    }
+    stack(layers).width(Fill).height(Fill).into()
 }
 
 /// flow-state's editor keymap; `None`-claimed keys use the widget defaults.

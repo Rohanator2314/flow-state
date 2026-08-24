@@ -17,6 +17,7 @@ pub mod editor;
 pub mod menu;
 pub mod preview;
 pub mod search;
+pub mod selection_menu;
 pub mod sidebar;
 pub mod spell;
 pub mod style;
