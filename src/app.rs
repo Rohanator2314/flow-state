@@ -86,6 +86,7 @@ pub enum Message {
     ToggleMaximize(pane_grid::Pane),
     ClosePane(pane_grid::Pane),
     // sidebar
+    ToggleSidebar,
     ToggleDir(PathBuf),
     ChangeDirectory(PathBuf),
     OpenFile(PathBuf),
@@ -2372,6 +2373,11 @@ impl App {
                 Task::none()
             }
 
+            Message::ToggleSidebar => {
+                self.sidebar.toggle_collapsed();
+                self.sidebar.close_context();
+                view::editor::focus(self.active)
+            }
             Message::ToggleDir(path) => {
                 self.sidebar.close_context();
                 self.sidebar.toggle(path);

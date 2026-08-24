@@ -31,6 +31,7 @@ pub struct ContextMenu {
 
 pub struct Sidebar {
     pub root: PathBuf,
+    pub collapsed: bool,
     expanded: BTreeSet<PathBuf>,
     entries: Vec<Entry>,
     pub new_file: String,
@@ -50,6 +51,7 @@ impl Sidebar {
         let root = std::fs::canonicalize(&root).unwrap_or(root);
         let mut sidebar = Self {
             root,
+            collapsed: false,
             expanded: BTreeSet::new(),
             entries: Vec::new(),
             new_file: String::new(),
@@ -64,6 +66,10 @@ impl Sidebar {
             self.expanded.insert(path);
         }
         self.rebuild();
+    }
+
+    pub fn toggle_collapsed(&mut self) {
+        self.collapsed = !self.collapsed;
     }
 
     pub fn set_root(&mut self, path: PathBuf) -> Result<(), String> {
@@ -166,6 +172,26 @@ pub fn remap_descendant(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> 
 pub fn view(app: &App) -> Element<'_, Message> {
     let theme = &app.theme;
 
+    if app.sidebar.collapsed {
+        let expand = button(text("›").size(16).color(theme.text_inactive))
+            .on_press(Message::ToggleSidebar)
+            .padding([2, 8])
+            .style(crate::view::style::bare_button(theme));
+        return container(
+            container(expand)
+                .width(Fill)
+                .align_x(iced::Right),
+        )
+        .width(34)
+        .height(Fill)
+        .padding(Padding::new(4.0).top(10.0))
+        .style(move |_| container::Style {
+            background: Some(Background::Color(theme.surface)),
+            ..container::Style::default()
+        })
+        .into();
+    }
+
     // Compare by canonical path: the tree builds paths like `./a.md` from
     // `read_dir(".")`, while a document opened from the CLI arg is just
     // `a.md` — raw `PathBuf` equality would miss those.
@@ -250,7 +276,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 .style(crate::view::style::bare_button(theme)),
         );
     }
-    let header = mouse_area(
+    let directory = mouse_area(
         column![
             text("Current directory:")
                 .size(11)
@@ -261,6 +287,12 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .padding(Padding::from([0.0, 8.0])),
     )
     .on_right_press(Message::OpenSidebarContext(app.sidebar.root.clone(), true));
+    let collapse = button(text("‹").size(16).color(theme.text_inactive))
+        .on_press(Message::ToggleSidebar)
+        .padding([2, 8])
+        .style(crate::view::style::bare_button(theme));
+    let header =
+        row![container(directory).width(Fill), collapse].align_y(iced::Alignment::Start);
 
     let new_file = text_input("new file…", &app.sidebar.new_file)
         .on_input(Message::NewFileInput)
@@ -509,10 +541,22 @@ fn entry_button(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{Sidebar, child_path, remap_descendant};
+
+    #[test]
+    fn collapse_state_toggles_and_is_reversible() {
+        let mut sidebar = Sidebar::new(PathBuf::new());
+        assert!(!sidebar.collapsed);
+
+        sidebar.toggle_collapsed();
+        assert!(sidebar.collapsed);
+
+        sidebar.toggle_collapsed();
+        assert!(!sidebar.collapsed);
+    }
 
     #[test]
     fn child_path_accepts_only_one_plain_name() {
