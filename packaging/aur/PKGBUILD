@@ -1,7 +1,7 @@
 # Maintainer: Rohan S <rohans2314@gmail.com>
 
 pkgname=flow-state
-pkgver=0.1.45
+pkgver=0.1.46
 pkgrel=1
 pkgdesc='Focus-first desktop editor for Markdown, LaTeX, and plain text'
 arch=('x86_64')
@@ -22,9 +22,9 @@ source=(
   'flow-state-icon.png'
 )
 sha256sums=(
-  '376d0c4918cfc62e5a8cfb32cd22b2fcb47f5c70fff8df065f556d21e72ad6e0'
+  'd238f7727d3c903d9a0ed09f2c845dbf80aeabc9afe5fd6523641cd31eb8b5d5'
   '8b44feecd3cfd3dee9f825811e2fab13c64c3e7c4d89a2f3c555ffe7444b8e35'
-  '823f49a61af685389e785ae0eec46f314e6d6ff1e90e2f7d6fcf710d83d0bc0b'
+  '82cebf2fd67164e9d69727969fb86167ad85ab09527a76077dc751c274e2c747'
   '68aa49d6b03a135ed26ce324a8709a185e9b56ba78edf07f335e233ae96ede97'
 )
 
