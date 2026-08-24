@@ -12,7 +12,8 @@
 //! the subset of the schema a writing app needs (the IRC-specific keys —
 //! nicknames, server messages, the base64 share format — are simply ignored
 //! by serde) and resolve it down to the handful of [`Theme`] surfaces the
-//! views consume. The bundled `Catppuccin Mocha` theme is used when no theme
+//! views consume. Every theme in the repository's `themes/` directory is
+//! compiled into the application, with `Catppuccin Mocha` used when no theme
 //! is configured.
 
 use std::path::Path;
@@ -21,9 +22,21 @@ use iced::theme::Palette;
 use iced::Color;
 use serde::{Deserialize, Deserializer};
 
-/// Flow State's default theme, bundled so the app has colors with zero config.
-const CATPPUCCIN_MOCHA: &str =
-    include_str!("../../assets/themes/catppuccin-mocha.toml");
+pub const DEFAULT_THEME_NAME: &str = "catppuccin-mocha";
+
+/// Release themes are compiled into the executable so the chooser is complete
+/// even when the app is distributed as a single binary.
+const BUNDLED_THEMES: &[(&str, &str)] = &[
+    ("catppuccin-latte", include_str!("../../themes/catppuccin-latte.toml")),
+    ("catppuccin-mocha", include_str!("../../themes/catppuccin-mocha.toml")),
+    ("ferra", include_str!("../../themes/ferra.toml")),
+    ("gruvbox-dark", include_str!("../../themes/gruvbox-dark.toml")),
+    ("kanagawa", include_str!("../../themes/kanagawa.toml")),
+    ("krepko-dark", include_str!("../../themes/krepko-dark.toml")),
+    ("krepko-light", include_str!("../../themes/krepko-light.toml")),
+    ("nord", include_str!("../../themes/nord.toml")),
+    ("tokyo-night", include_str!("../../themes/tokyo-night.toml")),
+];
 
 /// Resolved colors flow-state's widgets actually use, mapped from a
 /// [`Styles`]. Keeping this small, app-facing type means the views never see
@@ -75,7 +88,7 @@ impl Default for Theme {
     /// The bundled Catppuccin Mocha theme. Falls back to the neutral dark
     /// theme only if the bundled file somehow fails to parse.
     fn default() -> Self {
-        Styles::catppuccin_mocha().to_theme()
+        Self::bundled(DEFAULT_THEME_NAME).expect("default release theme is bundled")
     }
 }
 
@@ -88,6 +101,19 @@ fn rgb(hex: u32) -> Color {
 }
 
 impl Theme {
+    /// Names of every theme compiled into release binaries.
+    pub fn bundled_names() -> impl Iterator<Item = &'static str> {
+        BUNDLED_THEMES.iter().map(|(name, _)| *name)
+    }
+
+    /// Resolve a release theme by its config/chooser name.
+    pub fn bundled(name: &str) -> Option<Self> {
+        let (_, raw) = BUNDLED_THEMES.iter().find(|(candidate, _)| *candidate == name)?;
+        let styles: Styles = toml::from_str(raw)
+            .unwrap_or_else(|error| panic!("bundled theme '{name}' does not parse: {error}"));
+        Some(styles.to_theme())
+    }
+
     /// Load a halloy-format theme file and resolve it to flow-state surfaces.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let raw = std::fs::read_to_string(path)?;
@@ -163,13 +189,6 @@ struct Buffer {
 }
 
 impl Styles {
-    /// The bundled Catppuccin Mocha theme, parsed. Bundled and unit-tested, so
-    /// the `expect` is effectively a build-time guarantee.
-    fn catppuccin_mocha() -> Self {
-        toml::from_str(CATPPUCCIN_MOCHA)
-            .expect("bundled catppuccin-mocha.toml parses")
-    }
-
     /// Resolve the schema down to flow-state's surfaces, filling any unset
     /// color from the neutral [`fallback`].
     fn to_theme(&self) -> Theme {
@@ -252,6 +271,28 @@ mod tests {
         assert_eq!(theme.surface, rgb(0x1e1e2e)); // general.background
         assert_eq!(theme.accent, rgb(0xcba6f7)); // general.unread_indicator
         assert_eq!(theme.border, rgb(0x313244)); // general.border
+    }
+
+    #[test]
+    fn every_release_theme_is_registered_and_parses() {
+        let mut files: Vec<String> = std::fs::read_dir("themes")
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                (path.extension()? == "toml")
+                    .then(|| path.file_stem()?.to_str().map(str::to_string))?
+            })
+            .collect();
+        files.sort();
+
+        let mut bundled: Vec<&str> = Theme::bundled_names().collect();
+        bundled.sort();
+
+        assert_eq!(bundled, files);
+        for name in bundled {
+            assert!(Theme::bundled(name).is_some(), "theme '{name}' parses");
+        }
     }
 
     #[test]

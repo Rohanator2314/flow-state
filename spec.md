@@ -252,8 +252,8 @@ external edits are picked up (within ~1 s) and applied without a restart.
   IRC-specific keys halloy themes also carry (nicknames, server messages) are
   ignored, so any halloy theme loads; any key flow-state needs but a file
   omits falls back to a neutral default (never blank).
-- **Catppuccin Mocha** is bundled as the built-in default, so the app
-  works with zero config.
+- Every theme in `themes/` is bundled into release binaries and available in
+  the theme chooser with zero config. **Catppuccin Mocha** is the default.
 
 ---
 

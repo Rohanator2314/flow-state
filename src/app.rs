@@ -280,13 +280,7 @@ pub fn font_options(input: &str) -> Vec<String> {
 /// Resolve a theme by its command-bar name — used for the live preview while
 /// arrowing through the theme list, without touching the config.
 fn load_theme_by_name(name: &str) -> FlowTheme {
-    if name == core::config::BUILTIN_THEME {
-        return FlowTheme::default();
-    }
-    core::config::config_dir()
-        .map(|d| d.join("themes").join(format!("{name}.toml")))
-        .and_then(|path| FlowTheme::load(&path).ok())
-        .unwrap_or_default()
+    core::config::resolve_theme(name).0
 }
 
 /// Subscription filter: ESC, regardless of whether a widget captured it.

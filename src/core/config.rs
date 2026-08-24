@@ -18,8 +18,8 @@ use crate::core::theme::Theme;
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
-    /// Name of a theme file (without `.toml`) in the themes directory;
-    /// empty = built-in theme.
+    /// Bundled theme name or a theme file stem from the user themes directory;
+    /// empty = the built-in default.
     pub theme: String,
     pub latex_compiler: String,
     /// Initial fraction of the pane area given to the editor.
@@ -81,23 +81,9 @@ impl Config {
         }
     }
 
-    /// Resolve the configured theme from `~/.config/flow-state/themes/`,
-    /// falling back to the built-in theme.
+    /// Resolve the configured user or release theme.
     pub fn load_theme(&self) -> (Theme, Option<String>) {
-        if self.theme.is_empty() {
-            return (Theme::default(), None);
-        }
-        let Some(dir) = config_dir() else {
-            return (Theme::default(), None);
-        };
-        let path = dir.join("themes").join(format!("{}.toml", self.theme));
-        match Theme::load(&path) {
-            Ok(theme) => (theme, None),
-            Err(e) => (
-                Theme::default(),
-                Some(format!("theme '{}' not loaded ({e}); using built-in", self.theme)),
-            ),
-        }
+        resolve_theme(&self.theme)
     }
 
     /// Editor share of the pane area, clamped to a sane range.
@@ -114,25 +100,72 @@ impl Config {
     }
 }
 
-/// Theme names available to the in-app switcher: the built-in default plus
-/// every `*.toml` in the themes directory.
+/// Theme names available to the in-app switcher: the default, every release
+/// theme, and any user-installed `*.toml` theme.
 pub const BUILTIN_THEME: &str = "(default)";
 
 pub fn available_themes() -> Vec<String> {
-    let mut names = vec![BUILTIN_THEME.to_string()];
+    let mut available: Vec<String> = Theme::bundled_names().map(str::to_string).collect();
     if let Some(dir) = config_dir().map(|d| d.join("themes"))
         && let Ok(read) = std::fs::read_dir(dir)
     {
-        let mut found: Vec<String> = read
+        available.extend(read
             .flatten()
             .filter_map(|e| {
                 let path = e.path();
                 (path.extension()? == "toml")
                     .then(|| path.file_stem()?.to_str().map(str::to_string))?
-            })
-            .collect();
-        found.sort();
-        names.extend(found);
+            }));
     }
+    available.sort();
+    available.dedup();
+
+    let mut names = vec![BUILTIN_THEME.to_string()];
+    names.extend(available);
     names
+}
+
+/// User files override release themes with the same name. Missing user files
+/// fall back to the compiled release bundle, then to the default theme.
+pub fn resolve_theme(name: &str) -> (Theme, Option<String>) {
+    if name.is_empty() || name == BUILTIN_THEME {
+        return (Theme::default(), None);
+    }
+
+    if let Some(path) = config_dir().map(|dir| dir.join("themes").join(format!("{name}.toml")))
+        && path.exists()
+    {
+        return match Theme::load(&path) {
+            Ok(theme) => (theme, None),
+            Err(error) => (
+                Theme::default(),
+                Some(format!("theme '{name}' not loaded ({error}); using built-in")),
+            ),
+        };
+    }
+
+    Theme::bundled(name).map_or_else(
+        || {
+            (
+                Theme::default(),
+                Some(format!("theme '{name}' not found; using built-in")),
+            )
+        },
+        |theme| (theme, None),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_themes_are_available_without_user_configuration() {
+        let options = available_themes();
+        assert_eq!(options.first().map(String::as_str), Some(BUILTIN_THEME));
+        for name in Theme::bundled_names() {
+            assert!(options.iter().any(|option| option == name));
+            assert!(resolve_theme(name).1.is_none());
+        }
+    }
 }
