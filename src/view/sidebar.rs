@@ -97,6 +97,13 @@ impl Sidebar {
         self.context = None;
     }
 
+    pub fn context_directory(&self) -> Option<PathBuf> {
+        self.context
+            .as_ref()
+            .filter(|context| context.is_dir)
+            .map(|context| context.target.clone())
+    }
+
     pub fn context_is_editing(&self) -> bool {
         self.context.as_ref().is_some_and(|context| {
             matches!(
@@ -243,13 +250,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
             })
             .width(Fill)
             .style(move |_theme, status| entry_button(color, accent, is_open, is_active, status));
-        let mut entry_area = mouse_area(entry_button).on_right_press(Message::OpenSidebarContext(
+        let entry_area = mouse_area(entry_button).on_right_press(Message::OpenSidebarContext(
             entry.path.clone(),
             entry.is_dir,
         ));
-        if entry.is_dir {
-            entry_area = entry_area.on_double_click(Message::ChangeDirectory(entry.path.clone()));
-        }
         tree = tree.push(entry_area);
 
         if app
@@ -330,19 +334,31 @@ fn context_menu(app: &App) -> Element<'_, Message> {
     let target_kind = if context.is_dir { "FOLDER" } else { "FILE" };
     let body: Element<'_, Message> = match context.mode {
         ContextMode::Menu => {
-            let mut actions = column![
-                button(text("New file").size(12))
-                    .on_press(Message::SidebarContextCreateFile)
-                    .padding([5, 8])
-                    .width(Fill)
-                    .style(crate::view::style::action_button(theme, false)),
-                button(text("New folder").size(12))
-                    .on_press(Message::SidebarContextCreateFolder)
-                    .padding([5, 8])
-                    .width(Fill)
-                    .style(crate::view::style::action_button(theme, false)),
-            ]
-            .spacing(1);
+            let mut actions = column![].spacing(1);
+            if context.is_dir && context.target != app.sidebar.root {
+                actions = actions.push(
+                    button(text("Change current directory").size(12))
+                        .on_press(Message::SidebarContextChangeDirectory)
+                        .padding([5, 8])
+                        .width(Fill)
+                        .style(crate::view::style::action_button(theme, false)),
+                );
+            }
+            actions = actions
+                .push(
+                    button(text("New file").size(12))
+                        .on_press(Message::SidebarContextCreateFile)
+                        .padding([5, 8])
+                        .width(Fill)
+                        .style(crate::view::style::action_button(theme, false)),
+                )
+                .push(
+                    button(text("New folder").size(12))
+                        .on_press(Message::SidebarContextCreateFolder)
+                        .padding([5, 8])
+                        .width(Fill)
+                        .style(crate::view::style::action_button(theme, false)),
+                );
             if context.target != app.sidebar.root {
                 actions = actions
                     .push(
@@ -556,6 +572,17 @@ mod tests {
 
         sidebar.toggle_collapsed();
         assert!(!sidebar.collapsed);
+    }
+
+    #[test]
+    fn only_folder_contexts_offer_a_directory_target() {
+        let mut sidebar = Sidebar::new(PathBuf::new());
+        let folder = PathBuf::from("notes");
+        sidebar.open_context(folder.clone(), true);
+        assert_eq!(sidebar.context_directory(), Some(folder));
+
+        sidebar.open_context(PathBuf::from("notes.md"), false);
+        assert_eq!(sidebar.context_directory(), None);
     }
 
     #[test]

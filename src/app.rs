@@ -92,6 +92,7 @@ pub enum Message {
     OpenFile(PathBuf),
     OpenSidebarContext(PathBuf, bool),
     CloseSidebarContext,
+    SidebarContextChangeDirectory,
     SidebarContextCreateFile,
     SidebarContextCreateFolder,
     SidebarContextRename,
@@ -2398,6 +2399,12 @@ impl App {
             Message::CloseSidebarContext => {
                 self.sidebar.close_context();
                 view::editor::focus(self.active)
+            }
+            Message::SidebarContextChangeDirectory => {
+                if let Some(path) = self.sidebar.context_directory() {
+                    self.change_directory(path);
+                }
+                Task::none()
             }
             Message::SidebarContextCreateFile => {
                 self.begin_sidebar_context(ContextMode::CreateFile)
