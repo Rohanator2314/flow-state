@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Flow State
+GenericName=Writing Application
+Comment=Focus-first editor for Markdown, LaTeX, and plain text
+Exec=flow-state %F
+Icon=flow-state
+Terminal=false
+Categories=Office;WordProcessor;
+MimeType=text/plain;text/markdown;text/x-tex;
+Keywords=writing;markdown;latex;editor;focus;
+StartupNotify=true

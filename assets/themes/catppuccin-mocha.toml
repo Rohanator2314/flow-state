@@ -1,0 +1,55 @@
+# Catppuccin Mocha — halloy theme format.
+# Palette: https://github.com/catppuccin/catppuccin
+
+[general]
+background = "#1e1e2e"        # base
+border = "#313244"            # surface0
+horizontal_rule = "#313244"   # surface0
+scrollbar = "#45475a"         # surface1
+unread_indicator = "#cba6f7"  # mauve
+highlight_indicator = "#f9e2af"
+
+[text]
+primary = "#cdd6f4"   # text
+secondary = "#a6adc8" # subtext0
+tertiary = "#b4befe"  # lavender
+success = "#a6e3a1"   # green
+error = "#f38ba8"     # red
+warning = "#f9e2af"   # yellow
+info = "#89b4fa"      # blue
+
+[buffer]
+background = "#181825"            # mantle
+background_text_input = "#11111b" # crust
+background_title_bar = "#11111b"  # crust
+border = "#313244"               # surface0
+border_selected = "#b4befe"      # lavender
+highlight = "#313244"
+selection = "#45475a"            # surface1
+timestamp = "#7f849c"            # overlay1
+url = "#89b4fa"
+
+[buttons.primary]
+background = "#1e1e2e"
+background_hover = "#313244"
+background_selected = "#45475a"
+background_selected_hover = "#585b70"
+
+[buttons.secondary]
+background = "#181825"
+background_hover = "#313244"
+background_selected = "#45475a"
+background_selected_hover = "#585b70"
+
+[formatting]
+white = "#cdd6f4"
+black = "#11111b"
+blue = "#89b4fa"
+green = "#a6e3a1"
+red = "#f38ba8"
+magenta = "#cba6f7"
+orange = "#fab387"
+yellow = "#f9e2af"
+cyan = "#89dceb"
+pink = "#f5c2e7"
+grey = "#7f849c"

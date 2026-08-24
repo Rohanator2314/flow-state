@@ -1,8 +1,18 @@
 [package]
 name = "flow-state"
-version = "0.1.45"
+version = "0.1.46"
 edition = "2024"
+authors = ["Rohan S <rohans2314@gmail.com>"]
+description = "A focus-first desktop editor for Markdown, LaTeX, and plain text"
 license = "GPL-3.0-or-later"
+repository = "https://github.com/Rohanator2314/flow-state"
+homepage = "https://github.com/Rohanator2314/flow-state"
+readme = "README.md"
+keywords = ["editor", "writing", "markdown", "latex"]
+categories = ["text-editors"]
+
+[package.metadata.wix]
+eula = false
 
 [profile.test]
 incremental = false

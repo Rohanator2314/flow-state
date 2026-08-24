@@ -1,0 +1,24 @@
+pkgbase = flow-state
+	pkgdesc = Focus-first desktop editor for Markdown, LaTeX, and plain text
+	pkgver = 0.1.45
+	pkgrel = 1
+	url = https://github.com/Rohanator2314/flow-state
+	arch = x86_64
+	license = GPL-3.0-or-later
+	makedepends = cargo
+	depends = glibc
+	depends = libgcc
+	optdepends = hunspell-en_us: US English dictionary for spell checking
+	optdepends = texlive-latex: compile the LaTeX preview (pdflatex/xelatex)
+	optdepends = poppler: render the compiled PDF into the preview pane (pdftoppm)
+	options = !lto
+	source = flow-state-0.1.45.tar.gz::https://github.com/Rohanator2314/flow-state/archive/refs/tags/v0.1.45.tar.gz
+	source = flow-state.desktop
+	source = io.github.rohanator2314.flow-state.metainfo.xml
+	source = flow-state-icon.png
+	sha256sums = 376d0c4918cfc62e5a8cfb32cd22b2fcb47f5c70fff8df065f556d21e72ad6e0
+	sha256sums = 8b44feecd3cfd3dee9f825811e2fab13c64c3e7c4d89a2f3c555ffe7444b8e35
+	sha256sums = 823f49a61af685389e785ae0eec46f314e6d6ff1e90e2f7d6fcf710d83d0bc0b
+	sha256sums = 68aa49d6b03a135ed26ce324a8709a185e9b56ba78edf07f335e233ae96ede97
+
+pkgname = flow-state

@@ -1,0 +1,149 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  Based on the cargo-wix template, Copyright (C) 2017 Christopher R. Field,
+  licensed under the Apache License, Version 2.0.
+-->
+
+<?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
+  <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?else ?>
+  <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
+<?endif ?>
+
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+  <Product
+      Id='*'
+      Name='Flow State'
+      UpgradeCode='03EF9A3C-32D1-4B84-BDEB-3F33A01CB322'
+      Manufacturer='Rohan S'
+      Language='1033'
+      Codepage='1252'
+      Version='$(var.Version)'>
+
+    <Package
+        Id='*'
+        Keywords='Installer'
+        Description='A focus-first desktop editor for Markdown, LaTeX, and plain text'
+        Manufacturer='Rohan S'
+        InstallerVersion='450'
+        Languages='1033'
+        Compressed='yes'
+        InstallScope='perMachine'
+        SummaryCodepage='1252'/>
+
+    <MajorUpgrade
+        Schedule='afterInstallInitialize'
+        DowngradeErrorMessage='A newer version of [ProductName] is already installed.'/>
+
+    <Media Id='1' Cabinet='media1.cab' EmbedCab='yes'/>
+
+    <Directory Id='TARGETDIR' Name='SourceDir'>
+      <Directory Id='$(var.PlatformProgramFilesFolder)'>
+        <Directory Id='APPLICATIONFOLDER' Name='Flow State'>
+          <Component Id='License' Guid='*'>
+            <File Id='LicenseFile' Source='LICENSE' KeyPath='yes'/>
+          </Component>
+
+          <Directory Id='Bin' Name='bin'>
+            <Component
+                Id='Path'
+                Guid='62045237-9DD3-4E65-97FD-23E103A6CF90'
+                KeyPath='yes'>
+              <Environment
+                  Id='PATH'
+                  Name='PATH'
+                  Value='[Bin]'
+                  Permanent='no'
+                  Part='last'
+                  Action='set'
+                  System='yes'/>
+            </Component>
+            <Component Id='ApplicationBinary' Guid='*'>
+              <File
+                  Id='FlowStateExecutable'
+                  Name='flow-state.exe'
+                  Source='$(var.CargoTargetBinDir)\flow-state.exe'
+                  KeyPath='yes'/>
+            </Component>
+          </Directory>
+        </Directory>
+      </Directory>
+
+      <Directory Id='ProgramMenuFolder'>
+        <Directory Id='ApplicationProgramsFolder' Name='Flow State'/>
+      </Directory>
+    </Directory>
+
+    <DirectoryRef Id='ApplicationProgramsFolder'>
+      <Component Id='ApplicationShortcut' Guid='*'>
+        <Shortcut
+            Id='ApplicationStartMenuShortcut'
+            Name='Flow State'
+            Description='Focus-first writing application'
+            Target='[Bin]flow-state.exe'
+            WorkingDirectory='APPLICATIONFOLDER'
+            Icon='ProductICO'/>
+        <RemoveFolder Id='ApplicationProgramsFolder' On='uninstall'/>
+        <RegistryValue
+            Root='HKMU'
+            Key='Software\Rohanator2314\Flow State'
+            Name='installed'
+            Type='integer'
+            Value='1'
+            KeyPath='yes'/>
+      </Component>
+    </DirectoryRef>
+
+    <Feature
+        Id='Binaries'
+        Title='Flow State'
+        Description='Installs Flow State and its Start Menu shortcut.'
+        Level='1'
+        ConfigurableDirectory='APPLICATIONFOLDER'
+        AllowAdvertise='no'
+        Display='expand'
+        Absent='disallow'>
+      <ComponentRef Id='License'/>
+      <ComponentRef Id='ApplicationBinary'/>
+      <ComponentRef Id='ApplicationShortcut'/>
+
+      <Feature
+          Id='Environment'
+          Title='PATH environment variable'
+          Description='Allow flow-state to be launched from a terminal.'
+          Level='1'
+          Absent='allow'>
+        <ComponentRef Id='Path'/>
+      </Feature>
+    </Feature>
+
+    <SetProperty
+        Id='ARPINSTALLLOCATION'
+        Value='[APPLICATIONFOLDER]'
+        After='CostFinalize'/>
+    <Icon Id='ProductICO' SourceFile='wix\flow-state.ico'/>
+    <Property Id='ARPPRODUCTICON' Value='ProductICO'/>
+    <Property
+        Id='ARPHELPLINK'
+        Value='https://github.com/Rohanator2314/flow-state/issues'/>
+    <Property
+        Id='ARPURLINFOABOUT'
+        Value='https://github.com/Rohanator2314/flow-state'/>
+
+    <UI>
+      <UIRef Id='WixUI_FeatureTree'/>
+      <Publish
+          Dialog='WelcomeDlg'
+          Control='Next'
+          Event='NewDialog'
+          Value='CustomizeDlg'
+          Order='99'>1</Publish>
+      <Publish
+          Dialog='CustomizeDlg'
+          Control='Back'
+          Event='NewDialog'
+          Value='WelcomeDlg'
+          Order='99'>1</Publish>
+    </UI>
+  </Product>
+</Wix>

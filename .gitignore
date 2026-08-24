@@ -3,6 +3,9 @@
 # makepkg / Arch packaging build artifacts
 /pkg/
 *.pkg.tar.zst
+/packaging/aur/pkg/
+/packaging/aur/src/
+/packaging/aur/*.tar.gz
 
 # LaTeX build artifacts
 *.aux

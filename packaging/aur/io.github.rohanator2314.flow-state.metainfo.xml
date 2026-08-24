@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.rohanator2314.flow-state</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Flow State</name>
+  <summary>Focus-first writing for Markdown, LaTeX, and plain text</summary>
+  <developer id="io.github.rohanator2314">
+    <name>Rohan S</name>
+  </developer>
+  <description>
+    <p>
+      Flow State is a distraction-free writing application that keeps the
+      active paragraph visually prominent while surrounding text stays quiet.
+    </p>
+    <p>
+      It includes native Markdown previews, LaTeX previews, local spell
+      checking, typewriter scrolling, and a flexible multi-pane workspace.
+    </p>
+  </description>
+  <launchable type="desktop-id">flow-state.desktop</launchable>
+  <provides>
+    <binary>flow-state</binary>
+  </provides>
+  <url type="homepage">https://github.com/Rohanator2314/flow-state</url>
+  <url type="bugtracker">https://github.com/Rohanator2314/flow-state/issues</url>
+  <releases>
+    <release version="0.1.45" date="2026-08-24" />
+  </releases>
+  <content_rating type="oars-1.1" />
+</component>

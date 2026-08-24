@@ -31,8 +31,7 @@ jobs:
           - name: Windows x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: flow-state-windows-x64
-            asset: flow-state-windows-x64.zip
+            asset: flow-state-windows-x64.msi
 
     steps:
       - name: Check out repository
@@ -47,6 +46,10 @@ jobs:
       - name: Build
         run: cargo build --locked --release --target ${{ matrix.target }}
 
+      - name: Install MSI tooling
+        if: runner.os == 'Windows'
+        run: cargo install cargo-wix --version 0.3.9 --locked
+
       - name: Package Unix executable
         if: runner.os != 'Windows'
         shell: bash
@@ -56,13 +59,15 @@ jobs:
             -czf "${{ matrix.artifact }}.tar.gz" \
             flow-state
 
-      - name: Package Windows executable
+      - name: Build Windows installer
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive `
-            -Path "target\${{ matrix.target }}\release\flow-state.exe" `
-            -DestinationPath "${{ matrix.artifact }}.zip"
+          cargo wix `
+            --no-build `
+            --target "${{ matrix.target }}" `
+            --output "${{ matrix.asset }}" `
+            --nocapture
 
       - name: Upload build to release
         env:

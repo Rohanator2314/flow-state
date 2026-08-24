@@ -12,8 +12,8 @@
 //! the subset of the schema a writing app needs (the IRC-specific keys —
 //! nicknames, server messages, the base64 share format — are simply ignored
 //! by serde) and resolve it down to the handful of [`Theme`] surfaces the
-//! views consume. The bundled `Ferra` theme is halloy's default, used when no
-//! theme is configured.
+//! views consume. The bundled `Catppuccin Mocha` theme is used when no theme
+//! is configured.
 
 use std::path::Path;
 
@@ -21,8 +21,9 @@ use iced::theme::Palette;
 use iced::Color;
 use serde::{Deserialize, Deserializer};
 
-/// halloy's default theme, bundled so the app has colors with zero config.
-const FERRA: &str = include_str!("../../assets/themes/ferra.toml");
+/// Flow State's default theme, bundled so the app has colors with zero config.
+const CATPPUCCIN_MOCHA: &str =
+    include_str!("../../assets/themes/catppuccin-mocha.toml");
 
 /// Resolved colors flow-state's widgets actually use, mapped from a
 /// [`Styles`]. Keeping this small, app-facing type means the views never see
@@ -71,10 +72,10 @@ fn fallback() -> Theme {
 }
 
 impl Default for Theme {
-    /// The bundled Ferra theme (halloy's default). Falls back to the neutral
-    /// dark theme only if the bundled file somehow fails to parse.
+    /// The bundled Catppuccin Mocha theme. Falls back to the neutral dark
+    /// theme only if the bundled file somehow fails to parse.
     fn default() -> Self {
-        Styles::ferra().to_theme()
+        Styles::catppuccin_mocha().to_theme()
     }
 }
 
@@ -162,10 +163,11 @@ struct Buffer {
 }
 
 impl Styles {
-    /// The bundled Ferra theme, parsed. Bundled and unit-tested, so the
-    /// `expect` is effectively a build-time guarantee.
-    fn ferra() -> Self {
-        toml::from_str(FERRA).expect("bundled ferra.toml parses")
+    /// The bundled Catppuccin Mocha theme, parsed. Bundled and unit-tested, so
+    /// the `expect` is effectively a build-time guarantee.
+    fn catppuccin_mocha() -> Self {
+        toml::from_str(CATPPUCCIN_MOCHA)
+            .expect("bundled catppuccin-mocha.toml parses")
     }
 
     /// Resolve the schema down to flow-state's surfaces, filling any unset
@@ -241,15 +243,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_ferra_is_the_default() {
-        // The default theme is halloy's Ferra, fully resolved (no fallbacks).
+    fn bundled_catppuccin_mocha_is_the_default() {
+        // The default theme is Catppuccin Mocha, fully resolved (no fallbacks).
         let theme = Theme::default();
-        assert_eq!(theme.background, rgb(0x242226)); // buffer.background
-        assert_eq!(theme.text, rgb(0xfecdb2)); // text.primary
-        assert_eq!(theme.text_inactive, rgb(0xab8a79)); // text.secondary
-        assert_eq!(theme.surface, rgb(0x2b292d)); // general.background
-        assert_eq!(theme.accent, rgb(0xffa07a)); // general.unread_indicator
-        assert_eq!(theme.border, rgb(0x4f474d)); // general.border
+        assert_eq!(theme.background, rgb(0x181825)); // buffer.background
+        assert_eq!(theme.text, rgb(0xcdd6f4)); // text.primary
+        assert_eq!(theme.text_inactive, rgb(0xa6adc8)); // text.secondary
+        assert_eq!(theme.surface, rgb(0x1e1e2e)); // general.background
+        assert_eq!(theme.accent, rgb(0xcba6f7)); // general.unread_indicator
+        assert_eq!(theme.border, rgb(0x313244)); // general.border
     }
 
     #[test]
