@@ -1,41 +1,26 @@
 # flow-state
 
-A distraction-free writing app. The paragraph you are writing stays in full
-color; everything else is dimmed. Built with [iced](https://iced.rs) —
-a halloy-style layout with a directory sidebar and draggable, resizable
-editor/preview panes.
+![flow-state demo](fs.gif)
 
-For `.tex` and `.md` files a preview pane opens next to the editor — LaTeX is
-compiled and shown as a continuously scrollable column of page images
-(scroll through pages, **CTRL+scroll** to zoom), markdown is rendered
-natively. Everything else is plain text, full width.
+## Main features
 
-## Requirements
-
-- A GPU-capable system (iced renders via wgpu; falls back to software
-  rendering where unavailable).
-- For LaTeX preview: `pdflatex` (or `xelatex`) and `pdftoppm` (poppler-utils)
-  on `$PATH`. 
-- For spell checking: a Hunspell dictionary such as Arch's `hunspell-en_us`.
-  Dictionaries are read locally; document text is never sent to a service.
-
-## Usage
-
-```sh
-cargo run --release -- notes.md     # open a file
-cargo run --release --              # start with an untitled buffer
-```
-
-Clicking a file in the sidebar opens it in its own editor pane (so opening
-files doesn't replace what you're working on); clicking an already-open file
-just refocuses it. The preview pane follows whichever editor is focused.
-Single-click a folder to expand it, or double-click it to make it the sidebar's
-current directory. Right-click a file or folder to create a sibling/child,
-rename it, or delete it (deletion is confirmed, and open files are protected).
-Create files with the "new file…" input at the sidebar's bottom — if the
-focused buffer is the untitled scratch one, that buffer is named and nothing
-you wrote is lost. Drag pane title bars to swap panes, drag the splitter to
-resize, 🗖 to maximize, ✕ to close a pane.
+- **Focus-first writing.** The paragraph you are writing stays in full color
+  while everything else is dimmed, helping you stay focused on the current
+  thought.
+- **Sentence phantoms.** `SHIFT+BACKSPACE` turns the current sentence into
+  dimmed phantom text instead of permanently deleting it. Type to rewrite it,
+  press `TAB` to restore it, or press `SHIFT+BACKSPACE` again to discard it.
+  Phantoms are never saved to disk.
+- **Live previews.** Markdown is rendered natively, while LaTeX is compiled
+  into a continuously scrollable preview with `CTRL+scroll` zooming.
+- **Local spell checking.** Misspellings are quietly underlined after typing
+  pauses. `CTRL+.` jumps to a misspelling and opens corrections or dictionary
+  suggestions. Document text is never sent to a service.
+- **Keyboard-first editing.** Navigate, delete, correct, save, and manage the
+  editor without leaving the keyboard. A live cheat-sheet changes with the
+  modifier key you hold.
+- **Flexible workspace.** Files open in separate editor panes, previews follow
+  the focused editor, and panes can be swapped, resized, maximized, or closed.
 
 ## Keybindings
 
@@ -55,100 +40,11 @@ resize, 🗖 to maximize, ✕ to close a pane.
 | `CTRL+C/X/V` | Clipboard |
 | `ESC` | Open the command bar / go back / close |
 
-The sidebar shows a live keybind cheat-sheet above the new-file input that
-changes with the modifier you hold (CTRL/SHIFT/ALT); while a key is held, the
-editor highlights — in the accent color — the word or sentence its BACKSPACE
-would delete.
+## Still to cover
 
-**Phantoms.** `SHIFT+BACKSPACE` doesn't hard-delete the sentence — it leaves a
-dimmed "phantom" of it after the cursor. Type the same letters to fill it back
-in (different letters push it along), `TAB` to accept it, `SHIFT+BACKSPACE`
-again to discard it, or `CTRL+BACKSPACE` to drop its last word. Phantoms are
-never saved to disk.
-
-Misspelled words receive a quiet warning-colored underline after typing pauses.
-Press `CTRL+.` away from an underlined word to jump to the next misspelling
-(wrapping at the end), then press it again to type a replacement or choose a
-dictionary suggestion. The chooser can also add the word to the current
-language's personal dictionary. Corrections are one undoable edit. Checking
-pauses while a sentence phantom is active so ghost text is never corrected.
-
-Closing the window with unsaved changes asks save / discard / cancel.
-
-## Command bar (ESC)
-
-Press ESC for a halloy-style command bar: type to filter, `↑`/`↓` to select,
-ENTER to confirm, ESC to go back a level. Each command leads to its
-setting:
-
-- **theme** — a searchable list of every installed theme; arrowing through
-  it previews each theme **live**, ENTER keeps it (ESC reverts).
-- **font** — a searchable list of the system's installed fonts for the
-  editor, also with live preview.
-- **latex engine** — pdflatex or xelatex.
-- **split width** — a slider for the editor/preview ratio (applies live).
-- **focus dimming** — toggles the paragraph-dimming effect.
-- **typewriter scroll** — keeps the active paragraph vertically centered
-  (scrolls to re-center on paragraph change; a manual scroll pauses it until
-  you type again).
-- **paragraph glow** — a soft glow behind the active paragraph.
-- **spell checking** — toggles local, background spell checking.
-- **help** — the keybinding reference; typing `?` in the bar jumps straight
-  there.
-
-Changes apply immediately and are saved to `~/.config/flow-state/config.toml`
-(note: hand-written comments in that file don't survive a save from the
-menu).
-
-## Configuration
-
-Optional, at `~/.config/flow-state/config.toml`:
-
-```toml
-theme = "catppuccin_mocha"    # name of a file in ~/.config/flow-state/themes/
-latex_compiler = "pdflatex"   # or "xelatex"
-preview_split_ratio = 0.5     # initial editor share of the pane area
-focus_dimming = true          # dim paragraphs outside the active one
-typewriter_scroll = false     # keep the active paragraph vertically centered
-paragraph_glow = false        # soft glow behind the active paragraph
-editor_font = "JetBrains Mono"  # installed font family; empty = default sans
-spell_check = true            # local Hunspell-backed checking
-spell_language = "en_US"      # dictionary basename
-spell_dictionary = ""         # optional basename, .aff/.dic file, or folder
-```
-
-With an empty `spell_dictionary`, flow-state looks in
-`~/.config/flow-state/dictionaries/`, `/usr/share/hunspell/`, and the usual
-MySpell directories for `<spell_language>.aff` and `.dic`.
-Words added from the correction chooser are stored one per line in
-`~/.config/flow-state/dictionaries/<spell_language>.personal`.
-
-All of these are also editable live from the ESC command bar. The file is
-**hot-reloaded**: edit `config.toml` (or the active theme file) in any editor
-and the changes apply within about a second — no restart needed.
-
-Themes use [halloy](https://github.com/squidowl/halloy)'s TOML theme format,
-so the community theme library at <https://themes.halloy.chat> works directly:
-hit "Download TOML file" on any theme and drop it into
-`~/.config/flow-state/themes/`, then select it from the ESC command bar (or set
-`theme` in the config). flow-state reads the surfaces it needs from the file
-(`buffer.background`, `general.background`/`border`/`unread_indicator`,
-`text.primary`/`secondary`/`success`/`error`/`warning`) and ignores the
-IRC-specific keys; any surface a theme omits falls back to a neutral default.
-With no config at all, halloy's bundled **Ferra** theme is used.
-
-## License
-
-GPL-3.0 (see [LICENSE](LICENSE)). The pane chrome (title bars, controls,
-gaps, focus borders) and the theme format/parser are adapted from
-[halloy](https://github.com/squidowl/halloy) (GPL-3.0); the bundled **Ferra**
-theme (`assets/themes/ferra.toml`) is halloy's default theme by
-[Casper Storm](https://github.com/casperstorm/ferra).
-
-## Contributing
-
-The product behavior is specified in [spec.md](spec.md); the code layout,
-data flow, and step-by-step recipes for common changes (new keybinding, new
-preview type, new pane kind, new config/theme key) are in
-[ARCHITECTURE.md](ARCHITECTURE.md). `cargo test` runs the unit suite — the
-LaTeX pipeline tests need `pdflatex` and `pdftoppm` installed.
+- What flow-state is, who it is for, and why it exists.
+- Installation, system requirements, and a short getting-started example.
+- File, pane, and sidebar navigation.
+- Configuration, themes, and the command bar.
+- Current limitations and planned features.
+- Contributing, issue reporting, licensing, and Halloy attribution.
