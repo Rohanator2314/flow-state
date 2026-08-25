@@ -2,6 +2,7 @@
 name = "flow-state"
 version = "0.1.46"
 edition = "2024"
+build = "build.rs"
 authors = ["Rohan S <rohans2314@gmail.com>"]
 description = "A focus-first desktop editor for Markdown, LaTeX, and plain text"
 license = "GPL-3.0-or-later"
@@ -36,3 +37,9 @@ tokio = { version = "1.52.3", features = ["rt"] }
 toml = "1.1.2"
 unicode-segmentation = "1.13.3"
 walkdir = "2.5.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_UI_Shell"] }
+
+[build-dependencies]
+winresource = "0.1.31"

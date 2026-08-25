@@ -25,7 +25,7 @@
         Keywords='Installer'
         Description='A focus-first desktop editor for Markdown, LaTeX, and plain text'
         Manufacturer='Rohan S'
-        InstallerVersion='450'
+        InstallerVersion='500'
         Languages='1033'
         Compressed='yes'
         InstallScope='perMachine'
@@ -82,7 +82,11 @@
             Description='Focus-first writing application'
             Target='[Bin]flow-state.exe'
             WorkingDirectory='APPLICATIONFOLDER'
-            Icon='ProductICO'/>
+            Icon='ProductICO'>
+          <ShortcutProperty
+              Key='System.AppUserModel.ID'
+              Value='Rohanator2314.FlowState'/>
+        </Shortcut>
         <RemoveFolder Id='ApplicationProgramsFolder' On='uninstall'/>
         <RegistryValue
             Root='HKLM'
