@@ -1,0 +1,59 @@
+name: Build Windows MSI
+
+run-name: Build Windows MSI from ${{ inputs.build_ref }} for ${{ inputs.release_tag }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_ref:
+        description: Git ref or commit to build
+        required: true
+        type: string
+      release_tag:
+        description: Existing GitHub Release tag whose MSI should be replaced
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.build_ref }}
+
+      - name: Install Rust target
+        run: rustup target add x86_64-pc-windows-msvc
+
+      - name: Run tests
+        run: cargo test --locked --release --target x86_64-pc-windows-msvc -- --skip core::latex::tests
+
+      - name: Build
+        run: cargo build --locked --release --target x86_64-pc-windows-msvc
+
+      - name: Install MSI tooling
+        run: cargo install cargo-wix --version 0.3.9 --locked
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          cargo wix `
+            --no-build `
+            --target "x86_64-pc-windows-msvc" `
+            --output "flow-state-windows-x64.msi" `
+            --nocapture
+
+      - name: Upload MSI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release upload
+          "${{ inputs.release_tag }}"
+          flow-state-windows-x64.msi
+          --clobber
