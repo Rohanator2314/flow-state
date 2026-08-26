@@ -79,7 +79,7 @@
             Id='ApplicationStartMenuShortcut'
             Name='Flow State'
             Description='Focus-first writing application'
-            Target='[#FlowStateExecutable]'
+            Target='[Bin]flow-state.exe'
             WorkingDirectory='APPLICATIONFOLDER'
             Icon='ProductICO'>
           <ShortcutProperty
@@ -87,7 +87,7 @@
               Value='Rohanator2314.FlowState'/>
         </Shortcut>
         <RegistryValue
-            Root='HKLM'
+            Root='HKCU'
             Key='Software\Rohanator2314\Flow State'
             Name='installed'
             Type='integer'
