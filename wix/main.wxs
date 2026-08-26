@@ -70,16 +70,16 @@
         </Directory>
       </Directory>
 
-      <Directory Id='CommonProgramsFolder'/>
+      <Directory Id='ProgramMenuFolder'/>
     </Directory>
 
-    <DirectoryRef Id='CommonProgramsFolder'>
+    <DirectoryRef Id='ProgramMenuFolder'>
       <Component Id='ApplicationShortcut' Guid='*'>
         <Shortcut
             Id='ApplicationStartMenuShortcut'
             Name='Flow State'
             Description='Focus-first writing application'
-            Target='[Bin]flow-state.exe'
+            Target='[#FlowStateExecutable]'
             WorkingDirectory='APPLICATIONFOLDER'
             Icon='ProductICO'>
           <ShortcutProperty
