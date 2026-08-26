@@ -69,6 +69,45 @@ jobs:
             --output "${{ matrix.asset }}" `
             --nocapture
 
+      - name: Verify Windows Start Menu registration
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $msi = (Resolve-Path "${{ matrix.asset }}").Path
+          $install = Start-Process msiexec.exe `
+            -ArgumentList "/i `"$msi`" /qn /norestart" `
+            -Wait `
+            -PassThru
+          if ($install.ExitCode -notin 0, 3010) {
+            throw "MSI installation failed with exit code $($install.ExitCode)"
+          }
+
+          try {
+            $programs = [Environment]::GetFolderPath(
+              [Environment+SpecialFolder]::CommonPrograms
+            )
+            $shortcut = Join-Path $programs "Flow State.lnk"
+            if (-not (Test-Path $shortcut)) {
+              throw "MSI did not create the Start Menu shortcut at $shortcut"
+            }
+
+            $shell = New-Object -ComObject WScript.Shell
+            $target = $shell.CreateShortcut($shortcut).TargetPath
+            $expected = Join-Path $env:ProgramFiles "Flow State\bin\flow-state.exe"
+            if ($target -ne $expected) {
+              throw "Start Menu shortcut targets '$target', expected '$expected'"
+            }
+          }
+          finally {
+            $uninstall = Start-Process msiexec.exe `
+              -ArgumentList "/x `"$msi`" /qn /norestart" `
+              -Wait `
+              -PassThru
+            if ($uninstall.ExitCode -notin 0, 3010) {
+              throw "MSI uninstall failed with exit code $($uninstall.ExitCode)"
+            }
+          }
+
       - name: Upload build to release
         env:
           GH_TOKEN: ${{ github.token }}
